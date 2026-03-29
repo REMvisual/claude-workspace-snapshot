@@ -178,6 +178,7 @@ if ($All) {
                 $wtParts += "`"$dir`""
                 $wtParts += "--title"
                 $wtParts += "`"$tabTitle`""
+                $wtParts += "--suppressApplicationTitle"
                 if ($tabColor) {
                     $wtParts += "--tabColor"
                     $wtParts += "`"$tabColor`""
@@ -232,6 +233,7 @@ foreach ($gi in $selectedGroups) {
         $wtParts += "`"$dir`""
         $wtParts += "--title"
         $wtParts += "`"$tabTitle`""
+        $wtParts += "--suppressApplicationTitle"
         if ($tabColor) {
             $wtParts += "--tabColor"
             $wtParts += "`"$tabColor`""
