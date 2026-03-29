@@ -1,136 +1,61 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#1a1a2e"/>
-      <stop offset="100%" stop-color="#16213e"/>
-    </linearGradient>
-    <linearGradient id="arrowGrad" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#4A9BD9"/>
-      <stop offset="100%" stop-color="#2ECC71"/>
-    </linearGradient>
-  </defs>
-
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 200" width="840" height="200">
   <!-- Background -->
-  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="840" height="200" rx="12" fill="#0D1117"/>
 
-  <!-- Subtle grid pattern -->
-  <g opacity="0.04" stroke="#4A9BD9" stroke-width="1">
-    <line x1="0" y1="80" x2="1280" y2="80"/>
-    <line x1="0" y1="160" x2="1280" y2="160"/>
-    <line x1="0" y1="240" x2="1280" y2="240"/>
-    <line x1="0" y1="320" x2="1280" y2="320"/>
-    <line x1="0" y1="400" x2="1280" y2="400"/>
-    <line x1="0" y1="480" x2="1280" y2="480"/>
-    <line x1="0" y1="560" x2="1280" y2="560"/>
-    <line x1="160" y1="0" x2="160" y2="640"/>
-    <line x1="320" y1="0" x2="320" y2="640"/>
-    <line x1="480" y1="0" x2="480" y2="640"/>
-    <line x1="640" y1="0" x2="640" y2="640"/>
-    <line x1="800" y1="0" x2="800" y2="640"/>
-    <line x1="960" y1="0" x2="960" y2="640"/>
-    <line x1="1120" y1="0" x2="1120" y2="640"/>
-  </g>
-
-  <!-- ==================== LEFT SIDE: LOGO (scaled up) ==================== -->
-  <g transform="translate(120, 140)">
-    <!-- Terminal window body -->
-    <rect x="0" y="0" width="300" height="260" rx="16" ry="16" fill="#1E1E2E"/>
-
-    <!-- Terminal title bar -->
-    <rect x="0" y="0" width="300" height="52" rx="16" ry="16" fill="#2A2A3E"/>
-    <rect x="0" y="32" width="300" height="20" fill="#2A2A3E"/>
-
+  <!-- Logo: terminal with colored tabs + restore arrow -->
+  <g transform="translate(32, 32)">
+    <!-- Terminal body -->
+    <rect width="120" height="100" rx="8" fill="#1E1E2E"/>
+    <!-- Title bar -->
+    <rect width="120" height="24" rx="8" fill="#2A2A3E"/>
+    <rect y="16" width="120" height="8" fill="#2A2A3E"/>
     <!-- Tabs -->
-    <rect x="14" y="12" width="58" height="28" rx="6" ry="6" fill="#4A9BD9"/>
-    <rect x="80" y="12" width="58" height="28" rx="6" ry="6" fill="#9B59B6"/>
-    <rect x="146" y="12" width="58" height="28" rx="6" ry="6" fill="#2ECC71"/>
-    <rect x="212" y="12" width="58" height="28" rx="6" ry="6" fill="#E67E22"/>
-
-    <!-- Tab labels (small text) -->
-    <text x="43" y="31" font-family="monospace" font-size="11" fill="#fff" text-anchor="middle" opacity="0.9">main</text>
-    <text x="109" y="31" font-family="monospace" font-size="11" fill="#fff" text-anchor="middle" opacity="0.9">api</text>
-    <text x="175" y="31" font-family="monospace" font-size="11" fill="#fff" text-anchor="middle" opacity="0.9">web</text>
-    <text x="241" y="31" font-family="monospace" font-size="11" fill="#fff" text-anchor="middle" opacity="0.9">test</text>
-
-    <!-- Terminal content lines -->
-    <rect x="20" y="70" width="120" height="6" rx="3" fill="#4A9BD9" opacity="0.3"/>
-    <rect x="20" y="86" width="160" height="6" rx="3" fill="#9B59B6" opacity="0.25"/>
-    <rect x="20" y="102" width="100" height="6" rx="3" fill="#2ECC71" opacity="0.2"/>
-    <rect x="20" y="118" width="140" height="6" rx="3" fill="#E67E22" opacity="0.25"/>
-    <rect x="20" y="134" width="80" height="6" rx="3" fill="#4A9BD9" opacity="0.2"/>
-    <rect x="20" y="150" width="180" height="6" rx="3" fill="#9B59B6" opacity="0.15"/>
-    <rect x="20" y="166" width="110" height="6" rx="3" fill="#2ECC71" opacity="0.2"/>
-    <rect x="20" y="182" width="150" height="6" rx="3" fill="#4A9BD9" opacity="0.15"/>
-
-    <!-- Cursor blink -->
-    <rect x="20" y="202" width="8" height="14" rx="1" fill="#4A9BD9" opacity="0.7"/>
-
-    <!-- Circular restore arrow (bottom-right overlay) -->
-    <circle cx="252" cy="210" r="46" fill="#0D1117" opacity="0.9"/>
-    <path d="M252 174 A36 36 0 1 1 216 210" fill="none" stroke="#4A9BD9" stroke-width="6" stroke-linecap="round"/>
-    <polygon points="220,194 215,212 234,208" fill="#4A9BD9"/>
+    <rect x="6"  y="6" width="24" height="12" rx="3" fill="#4A9BD9"/>
+    <rect x="34" y="6" width="24" height="12" rx="3" fill="#9B59B6"/>
+    <rect x="62" y="6" width="24" height="12" rx="3" fill="#2ECC71"/>
+    <rect x="90" y="6" width="24" height="12" rx="3" fill="#E67E22"/>
+    <!-- Content lines -->
+    <rect x="10" y="34" width="50" height="3" rx="1.5" fill="#4A9BD9" opacity="0.3"/>
+    <rect x="10" y="42" width="70" height="3" rx="1.5" fill="#9B59B6" opacity="0.25"/>
+    <rect x="10" y="50" width="40" height="3" rx="1.5" fill="#2ECC71" opacity="0.2"/>
+    <rect x="10" y="58" width="60" height="3" rx="1.5" fill="#E67E22" opacity="0.25"/>
+    <rect x="10" y="66" width="35" height="3" rx="1.5" fill="#4A9BD9" opacity="0.2"/>
+    <!-- Restore arrow -->
+    <circle cx="96" cy="78" r="20" fill="#0D1117" opacity="0.9"/>
+    <path d="M96 64 A14 14 0 1 1 82 78" fill="none" stroke="#4A9BD9" stroke-width="3" stroke-linecap="round"/>
+    <polygon points="84,70 82,79 91,77" fill="#4A9BD9"/>
   </g>
 
-  <!-- ==================== WORKFLOW ARROW ==================== -->
-  <g transform="translate(200, 430)">
-    <!-- "snapshot" label -->
-    <text x="0" y="0" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="16" fill="#4A9BD9" opacity="0.6" font-weight="500">snapshot</text>
+  <!-- Title -->
+  <text x="180" y="72" font-family="'Segoe UI', Arial, sans-serif" font-size="32" fill="#E8E8F0" font-weight="700">claude-workspace-snapshot</text>
 
-    <!-- Arrow line -->
-    <line x1="90" y1="-5" x2="170" y2="-5" stroke="url(#arrowGrad)" stroke-width="2" stroke-dasharray="6,4" opacity="0.5"/>
-    <polygon points="170,-10 182,-5 170,0" fill="#2ECC71" opacity="0.5"/>
+  <!-- One-liner -->
+  <text x="180" y="102" font-family="'Segoe UI', Arial, sans-serif" font-size="16" fill="#8B8BA0">Never lose your Claude Code tabs again.</text>
 
-    <!-- "restore" label -->
-    <text x="188" y="0" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="16" fill="#2ECC71" opacity="0.6" font-weight="500">restore</text>
+  <!-- Badge row -->
+  <g transform="translate(180, 120)">
+    <!-- MIT badge -->
+    <rect x="0" y="0" width="32" height="20" rx="3" fill="#555"/>
+    <rect x="32" y="0" width="32" height="20" rx="3" fill="#4A9BD9"/>
+    <rect x="32" y="0" width="1" height="20" fill="#555"/>
+    <text x="16" y="14" font-family="'Segoe UI', Arial, sans-serif" font-size="11" fill="#fff" text-anchor="middle">MIT</text>
+    <text x="48" y="14" font-family="'Segoe UI', Arial, sans-serif" font-size="10" fill="#fff" text-anchor="middle">v1.1</text>
+
+    <!-- Claude Code badge -->
+    <rect x="76" y="0" width="68" height="20" rx="3" fill="#555"/>
+    <rect x="144" y="0" width="72" height="20" rx="3" fill="#8B5CF6"/>
+    <rect x="144" y="0" width="1" height="20" fill="#555"/>
+    <text x="110" y="14" font-family="'Segoe UI', Arial, sans-serif" font-size="11" fill="#fff" text-anchor="middle">Claude Code</text>
+    <text x="180" y="14" font-family="'Segoe UI', Arial, sans-serif" font-size="11" fill="#fff" text-anchor="middle">compatible</text>
+
+    <!-- Windows badge -->
+    <rect x="228" y="0" width="54" height="20" rx="3" fill="#555"/>
+    <rect x="282" y="0" width="56" height="20" rx="3" fill="#0078D6"/>
+    <rect x="282" y="0" width="1" height="20" fill="#555"/>
+    <text x="255" y="14" font-family="'Segoe UI', Arial, sans-serif" font-size="11" fill="#fff" text-anchor="middle">platform</text>
+    <text x="310" y="14" font-family="'Segoe UI', Arial, sans-serif" font-size="11" fill="#fff" text-anchor="middle">Windows</text>
   </g>
 
-  <!-- ==================== RIGHT SIDE: TEXT ==================== -->
-  <g transform="translate(520, 200)">
-    <!-- Main title -->
-    <text x="0" y="0" font-family="'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace" font-size="42" fill="#E8E8F0" font-weight="700" letter-spacing="-0.5">claude-workspace</text>
-    <text x="0" y="52" font-family="'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace" font-size="42" fill="#E8E8F0" font-weight="700" letter-spacing="-0.5">-snapshot</text>
-
-    <!-- Divider line -->
-    <line x1="0" y1="78" x2="220" y2="78" stroke="#4A9BD9" stroke-width="2" opacity="0.4"/>
-
-    <!-- Subtitle -->
-    <text x="0" y="112" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="22" fill="#8B8BA0" font-weight="400">Save and restore your</text>
-    <text x="0" y="142" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="22" fill="#8B8BA0" font-weight="400">Claude Code sessions</text>
-
-    <!-- Feature pills -->
-    <g transform="translate(0, 180)">
-      <!-- Pill: detect -->
-      <rect x="0" y="0" width="100" height="30" rx="15" fill="#4A9BD9" opacity="0.15"/>
-      <text x="50" y="20" font-family="'SF Mono', 'Cascadia Code', monospace" font-size="13" fill="#4A9BD9" text-anchor="middle">detect</text>
-
-      <!-- Pill: capture -->
-      <rect x="112" y="0" width="110" height="30" rx="15" fill="#9B59B6" opacity="0.15"/>
-      <text x="167" y="20" font-family="'SF Mono', 'Cascadia Code', monospace" font-size="13" fill="#9B59B6" text-anchor="middle">capture</text>
-
-      <!-- Pill: restore -->
-      <rect x="234" y="0" width="104" height="30" rx="15" fill="#2ECC71" opacity="0.15"/>
-      <text x="286" y="20" font-family="'SF Mono', 'Cascadia Code', monospace" font-size="13" fill="#2ECC71" text-anchor="middle">restore</text>
-
-      <!-- Pill: automate -->
-      <rect x="350" y="0" width="120" height="30" rx="15" fill="#E67E22" opacity="0.15"/>
-      <text x="410" y="20" font-family="'SF Mono', 'Cascadia Code', monospace" font-size="13" fill="#E67E22" text-anchor="middle">automate</text>
-    </g>
-  </g>
-
-  <!-- ==================== BOTTOM: Decorative session dots ==================== -->
-  <g transform="translate(0, 580)" opacity="0.15">
-    <circle cx="120" cy="0" r="4" fill="#4A9BD9"/>
-    <circle cx="140" cy="0" r="4" fill="#9B59B6"/>
-    <circle cx="160" cy="0" r="4" fill="#2ECC71"/>
-    <circle cx="180" cy="0" r="3" fill="#E67E22"/>
-
-    <circle cx="560" cy="0" r="3" fill="#4A9BD9"/>
-    <circle cx="580" cy="0" r="4" fill="#2ECC71"/>
-    <circle cx="600" cy="0" r="4" fill="#9B59B6"/>
-
-    <circle cx="1060" cy="0" r="4" fill="#E67E22"/>
-    <circle cx="1080" cy="0" r="3" fill="#4A9BD9"/>
-    <circle cx="1100" cy="0" r="4" fill="#2ECC71"/>
-    <circle cx="1120" cy="0" r="4" fill="#9B59B6"/>
-  </g>
+  <!-- Subtle bottom accent line -->
+  <rect x="32" y="170" width="776" height="1" fill="#4A9BD9" opacity="0.15"/>
 </svg>
