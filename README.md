@@ -2,12 +2,12 @@
   <img src="assets/banner.svg" alt="claude-workspace-snapshot" width="100%">
 </p>
 
-<p align="center">
-  <a href="https://github.com/REMvisual/claude-workspace-snapshot/releases/latest"><img src="https://img.shields.io/github/v/release/REMvisual/claude-workspace-snapshot?style=for-the-badge&label=Download&color=blue" alt="Download Latest"></a>
-  <a href="https://github.com/REMvisual/claude-workspace-snapshot/releases"><img src="https://img.shields.io/github/downloads/REMvisual/claude-workspace-snapshot/total?style=for-the-badge" alt="Total Downloads"></a>
-  <a href="![Views](https://komarev.com/ghpvc/?username=REMvisual-handoff&label=views&color=brightgreen&style=flat)"></a>
-</p>
----
+
+[![Download Latest](https://img.shields.io/github/v/release/REMvisual/claude-handoff?style=for-the-badge&label=Download&color=blue)](https://github.com/REMvisual/claude-handoff/releases/latest)
+[![Total Downloads](https://img.shields.io/github/downloads/REMvisual/claude-handoff/total?style=for-the-badge)](https://github.com/REMvisual/claude-handoff/releases)
+![Views](https://komarev.com/ghpvc/?username=REMvisual-handoff&label=Views&color=brightgreen&style=for-the-badge)
+
+
 
 ## Why This Exists
 
