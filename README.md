@@ -2,10 +2,6 @@
 
 **Save and restore your Claude Code sessions as color-coded Windows Terminal tabs.** Stop losing your workspace after every restart.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Claude Code](https://img.shields.io/badge/Claude_Code-compatible-blueviolet.svg)](https://claude.ai/code)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-![Views](https://komarev.com/ghpvc/?username=REMvisual&label=views&color=brightgreen&style=flat)
 [![Download Latest](https://img.shields.io/github/v/release/REMvisual/claude-workspace-snapshot?style=for-the-badge&label=Download&color=blue)](https://github.com/REMvisual/claude-workspace-snapshot/releases/latest)
 [![Total Downloads](https://img.shields.io/github/downloads/REMvisual/claude-workspace-snapshot/total?style=for-the-badge)](https://github.com/REMvisual/claude-workspace-snapshot/releases)
 ---
