@@ -5,6 +5,7 @@
 <p align="center">
   <a href="https://github.com/REMvisual/claude-workspace-snapshot/releases/latest"><img src="https://img.shields.io/github/v/release/REMvisual/claude-workspace-snapshot?style=for-the-badge&label=Download&color=blue" alt="Download Latest"></a>
   <a href="https://github.com/REMvisual/claude-workspace-snapshot/releases"><img src="https://img.shields.io/github/downloads/REMvisual/claude-workspace-snapshot/total?style=for-the-badge" alt="Total Downloads"></a>
+  <a href="![Views](https://komarev.com/ghpvc/?username=REMvisual-handoff&label=views&color=brightgreen&style=flat)"></a>
 </p>
 ---
 
@@ -168,4 +169,4 @@ If this tool saved you time, [give it a star](https://github.com/REMvisual/claud
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-compatible-blueviolet.svg)](https://claude.ai/code)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-![Views](https://komarev.com/ghpvc/?username=REMvisual-handoff&label=views&color=brightgreen&style=flat)
+
