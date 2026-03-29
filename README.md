@@ -1,9 +1,11 @@
-# claude-workspace-snapshot
+<p align="center">
+  <img src="assets/banner.svg" alt="claude-workspace-snapshot" width="100%">
+</p>
 
-**Save and restore your Claude Code sessions as color-coded Windows Terminal tabs.** Stop losing your workspace after every restart.
-
-[![Download Latest](https://img.shields.io/github/v/release/REMvisual/claude-workspace-snapshot?style=for-the-badge&label=Download&color=blue)](https://github.com/REMvisual/claude-workspace-snapshot/releases/latest)
-[![Total Downloads](https://img.shields.io/github/downloads/REMvisual/claude-workspace-snapshot/total?style=for-the-badge)](https://github.com/REMvisual/claude-workspace-snapshot/releases)
+<p align="center">
+  <a href="https://github.com/REMvisual/claude-workspace-snapshot/releases/latest"><img src="https://img.shields.io/github/v/release/REMvisual/claude-workspace-snapshot?style=for-the-badge&label=Download&color=blue" alt="Download Latest"></a>
+  <a href="https://github.com/REMvisual/claude-workspace-snapshot/releases"><img src="https://img.shields.io/github/downloads/REMvisual/claude-workspace-snapshot/total?style=for-the-badge" alt="Total Downloads"></a>
+</p>
 ---
 
 ## Why This Exists
