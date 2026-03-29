@@ -1,0 +1,93 @@
+{
+  "created": "2026-03-28T14:30:00.0000000-07:00",
+  "groups": [
+    {
+      "name": "skywatch",
+      "tabColor": "#4A9BD9",
+      "sessions": [
+        {
+          "sessionId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+          "projectPath": "C:\\Projects\\skywatch",
+          "project": "skywatch",
+          "summary": "Add hourly forecast caching to reduce API calls below the free tier limit",
+          "tabName": "skywatch: Add hourly forecast caching to reduc...",
+          "tabColor": "#4A9BD9",
+          "firstPrompt": "Add hourly forecast caching to reduce API calls below the free tier limit",
+          "modified": "2026-03-28T14:25:00.0000000-07:00",
+          "gitBranch": "feature/forecast-cache",
+          "slug": null,
+          "group": "skywatch",
+          "source": "process"
+        },
+        {
+          "sessionId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+          "projectPath": "C:\\Projects\\skywatch",
+          "project": "skywatch",
+          "summary": "Fix timezone handling in weather alert notifications",
+          "tabName": "skywatch: Fix timezone handling in weather aler...",
+          "tabColor": "#4A9BD9",
+          "firstPrompt": "Fix timezone handling in weather alert notifications",
+          "modified": "2026-03-28T14:10:00.0000000-07:00",
+          "gitBranch": "main",
+          "slug": null,
+          "group": "skywatch",
+          "source": "file"
+        }
+      ]
+    },
+    {
+      "name": "taskflow-api",
+      "tabColor": "#E67E22",
+      "sessions": [
+        {
+          "sessionId": "c3d4e5f6-a7b8-9012-cdef-123456789012",
+          "projectPath": "C:\\Projects\\taskflow-api",
+          "project": "taskflow-api",
+          "summary": "Fix race condition in concurrent task assignment",
+          "tabName": "taskflow-api: Fix race condition in concurrent ...",
+          "tabColor": "#E67E22",
+          "firstPrompt": "Fix race condition in concurrent task assignment when two users claim the same task",
+          "modified": "2026-03-28T14:20:00.0000000-07:00",
+          "gitBranch": "main",
+          "slug": null,
+          "group": "taskflow-api",
+          "source": "process"
+        }
+      ]
+    },
+    {
+      "name": "chatterbox",
+      "tabColor": "#2ECC71",
+      "sessions": [
+        {
+          "sessionId": "d4e5f6a7-b890-1234-defg-234567890123",
+          "projectPath": "C:\\Projects\\chatterbox",
+          "project": "chatterbox",
+          "summary": "Add message threading support to the chat API",
+          "tabName": "chatterbox: Add message threading support to t...",
+          "tabColor": "#2ECC71",
+          "firstPrompt": "Add message threading support to the chat API",
+          "modified": "2026-03-28T13:45:00.0000000-07:00",
+          "gitBranch": "feature/threading",
+          "slug": null,
+          "group": "chatterbox",
+          "source": "process"
+        },
+        {
+          "sessionId": "e5f6a7b8-9012-3456-efgh-345678901234",
+          "projectPath": "C:\\Projects\\chatterbox",
+          "project": "chatterbox",
+          "summary": "Implement typing indicators with WebSocket events",
+          "tabName": "chatterbox: Implement typing indicators with W...",
+          "tabColor": "#2ECC71",
+          "firstPrompt": "Implement typing indicators with WebSocket events",
+          "modified": "2026-03-28T13:30:00.0000000-07:00",
+          "gitBranch": "feature/typing-indicators",
+          "slug": null,
+          "group": "chatterbox",
+          "source": "file"
+        }
+      ]
+    }
+  ]
+}

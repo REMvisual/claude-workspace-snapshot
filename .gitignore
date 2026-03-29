@@ -1,0 +1,22 @@
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Runtime artifacts (contains personal data)
+/workspace.json
+
+# Environment
+.env
+.env.*
+
+# Claude Code local config
+.claude/
+.beads/
