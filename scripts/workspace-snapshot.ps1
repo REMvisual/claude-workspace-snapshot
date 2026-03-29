@@ -30,8 +30,32 @@ Get-ChildItem -Path $projectsDir -Filter '*.jsonl' -Recurse -ErrorAction Silentl
     Where-Object { $_.LastWriteTime -gt $recentCutoff -and $_.BaseName -match '^[0-9a-f]{8}-' } |
     ForEach-Object { $recentIds += $_.BaseName }
 
+# Method C: SDK sessions running via node launchers (no claude.exe child)
+# These use the Claude SDK directly — invisible to Method A when idle
+$sdkIds = @()
+$claudeParentPids = @($processIds | ForEach-Object {
+    Get-CimInstance Win32_Process -Filter "Name='claude.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match $_ } |
+        ForEach-Object { $_.ParentProcessId }
+} | Select-Object -Unique)
+$sdkLaunchers = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -match 'claude_local_launcher' -and $_.Name -eq 'node.exe' } |
+    Where-Object { $claudeParentPids -notcontains $_.ProcessId }
+if ($sdkLaunchers) {
+    # Count orphan SDK launchers — find their sessions via most recently modified
+    # .jsonl files that aren't already captured by Method A or B
+    $knownIds = @($processIds + $recentIds | Select-Object -Unique)
+    $sdkCount = ($sdkLaunchers | Measure-Object).Count
+    # Get the N most recently modified .jsonl files not already known
+    Get-ChildItem -Path $projectsDir -Filter '*.jsonl' -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.BaseName -match '^[0-9a-f]{8}-' -and $knownIds -notcontains $_.BaseName } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First $sdkCount |
+        ForEach-Object { $sdkIds += $_.BaseName }
+}
+
 # Combine and deduplicate
-$liveIds = @($processIds + $recentIds | Select-Object -Unique)
+$liveIds = @($processIds + $recentIds + $sdkIds | Select-Object -Unique)
 
 if ($liveIds.Count -eq 0) {
     Write-Host ""
