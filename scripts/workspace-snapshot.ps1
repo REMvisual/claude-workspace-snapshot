@@ -54,7 +54,7 @@ Get-ChildItem -Path $projectsDir -Filter 'sessions-index.json' -Recurse -ErrorAc
     } catch {}
 }
 
-# Deterministic color palette — each project gets a stable color based on its name
+# Deterministic color palette -- each project gets a stable color based on its name
 $colorPalette = @(
     '#4A9BD9','#D94A4A','#9B59B6','#E67E22','#2ECC71',
     '#1ABC9C','#F1C40F','#E74C3C','#3498DB','#E91E63',
