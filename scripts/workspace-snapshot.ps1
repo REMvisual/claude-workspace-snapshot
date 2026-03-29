@@ -64,11 +64,11 @@ $colorPalette = @(
 
 function Get-ProjectColor {
     param([string]$Name)
-    $hash = 5381
+    [int]$hash = 5381
     foreach ($c in $Name.ToCharArray()) {
-        $hash = (($hash -shl 5) + $hash) + [int]$c
+        $hash = (($hash * 33) + [int]$c) -band 0x7FFFFFFF
     }
-    $idx = [Math]::Abs($hash) % $colorPalette.Count
+    $idx = $hash % $colorPalette.Count
     return $colorPalette[$idx]
 }
 
