@@ -73,8 +73,8 @@ Write-Host ""
 
 # Display groups and sessions
 $globalIdx = 0
-$groupMap = @{}
-$sessionMap = @{}
+$groupMap = @{}  # maps display number -> group index
+$sessionMap = @{}  # maps display number -> (group index, session index)
 
 for ($gi = 0; $gi -lt $groups.Count; $gi++) {
     $g = $groups[$gi]
@@ -121,12 +121,15 @@ if ($All) {
         Write-Host ""
         exit 0
     } elseif ($response -match 'w') {
+        # Window selection mode: w1, w2, etc.
         $selectedGroups = @($response -split '[,\s]+' | ForEach-Object {
             $num = 0
             $cleaned = $_ -replace '[wW]', ''
             if ([int]::TryParse($cleaned.Trim(), [ref]$num)) { $num - 1 }
         } | Where-Object { $_ -ge 0 -and $_ -lt $groups.Count } | Select-Object -Unique)
     } else {
+        # Individual tab selection: 1, 3, 5, etc.
+        # We'll collect selected sessions and group them for opening
         $selectedTabs = @($response -split '[,\s]+' | ForEach-Object {
             $num = 0
             if ([int]::TryParse($_.Trim(), [ref]$num)) { $num }
@@ -138,6 +141,7 @@ if ($All) {
             exit 0
         }
 
+        # Group selected tabs by their original group for proper windowing
         $tabGroups = [ordered]@{}
         foreach ($tabNum in $selectedTabs) {
             $gi, $si = $sessionMap[$tabNum]
@@ -153,6 +157,7 @@ if ($All) {
             [void]$tabGroups[$gName].sessions.Add($g.sessions[$si])
         }
 
+        # Open each tab group as a window
         $totalTabs = 0
         foreach ($tg in $tabGroups.Values) {
             $wtParts = @()
@@ -185,7 +190,7 @@ if ($All) {
 
             $wtCmd = "wt " + ($wtParts -join ' ')
             cmd /c $wtCmd
-            Start-Sleep -Milliseconds 500
+            Start-Sleep -Milliseconds 500  # brief pause between windows
         }
 
         Write-Host "  Opened $totalTabs tab(s) in $($tabGroups.Count) window(s)." -ForegroundColor Green
@@ -200,6 +205,7 @@ if ($selectedGroups.Count -eq 0) {
     exit 0
 }
 
+# Open each selected group as a separate Windows Terminal window
 $totalTabs = 0
 $totalWindows = 0
 
@@ -241,6 +247,7 @@ foreach ($gi in $selectedGroups) {
     Write-Host "  Opening window: $($g.name) ($($g.sessions.Count) tabs)..." -ForegroundColor Green
     cmd /c $wtCmd
 
+    # Brief pause between windows so they don't collide
     if ($gi -ne $selectedGroups[-1]) {
         Start-Sleep -Milliseconds 800
     }

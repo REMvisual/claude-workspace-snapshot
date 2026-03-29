@@ -1,31 +1,54 @@
 # claude-workspace-snapshot
 
-Snapshot and restore your live Claude Code sessions as named, color-coded Windows Terminal tabs.
+Save and restore your Claude Code sessions as color-coded Windows Terminal tabs. Stop losing your workspace after every restart.
 
+[![Stars](https://img.shields.io/github/stars/REMvisual/claude-workspace-snapshot)](https://github.com/REMvisual/claude-workspace-snapshot/stargazers)
+[![Forks](https://img.shields.io/github/forks/REMvisual/claude-workspace-snapshot)](https://github.com/REMvisual/claude-workspace-snapshot/network/members)
+[![Last Commit](https://img.shields.io/github/last-commit/REMvisual/claude-workspace-snapshot)](https://github.com/REMvisual/claude-workspace-snapshot/commits/main)
+[![Views](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2FREMvisual%2Fclaude-workspace-snapshot&count_bg=%2379C83D&title_bg=%23555555&icon=&icon_color=%23E7E7E7&title=views&edge_flat=false)](https://hits.seeyoufarm.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Claude Code](https://img.shields.io/badge/Claude-Code-blue)](https://claude.ai/code)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![Windows](https://img.shields.io/badge/platform-Windows-0078D6)](https://github.com/REMvisual/claude-workspace-snapshot)
 
-## The Problem
+---
 
-You run 5-15 Claude Code sessions across different projects. After a restart, you lose all your tab layout -- working directories, session context, everything. Built-in `claude --resume` requires finding and typing 36-character UUIDs from a wall of text. This tool captures your entire workspace and rebuilds it in seconds.
+## Why This Exists
+
+You run multiple Claude Code sessions across different projects. You restart your machine. Now every tab is gone. The built-in `claude --resume` command exists, but it needs 36-character UUIDs that you have to dig out of a wall of text. For each session. One at a time.
+
+This tool fixes that. Two scripts. One saves your workspace, the other brings it back.
+
+## Before / After
+
+```
+BEFORE:  Restart -> lose 15 tabs -> manually find UUIDs -> type claude --resume for each one
+AFTER:   Restart -> double-click restore.bat -> all tabs back in 5 seconds
+```
+
+## Quick Demo
+
+```
+1. Work across multiple projects in Claude Code
+2. Before shutdown:  run snapshot.bat
+3. After restart:    run restore.bat  ->  everything's back
+```
+
+That's it. Your sessions come back in the right directories, with the right tab names, grouped by project, color-coded.
 
 ## Install
 
-### PowerShell (recommended)
+**PowerShell (recommended):**
 
 ```powershell
 irm https://raw.githubusercontent.com/REMvisual/claude-workspace-snapshot/main/install.ps1 | iex
 ```
 
-### Git Bash / WSL
+**Git Bash / WSL:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/REMvisual/claude-workspace-snapshot/main/install.sh | bash
 ```
 
-### Manual
+**Manual:**
 
 ```bash
 git clone https://github.com/REMvisual/claude-workspace-snapshot.git
@@ -34,15 +57,15 @@ cp claude-workspace-snapshot/scripts/* ~/.claude/scripts/
 
 ## Usage
 
-### Before Shutdown
+### Snapshot (before shutdown)
 
-Double-click `workspace-snapshot.bat` or run from terminal:
+Double-click `workspace-snapshot.bat` or run it from terminal:
 
 ```
 ~/.claude/scripts/workspace-snapshot.bat
 ```
 
-It detects your live sessions, shows them grouped by project, and saves to `~/.claude/workspace.json`.
+It finds your live sessions, groups them by project, and saves everything to `~/.claude/workspace.json`:
 
 ```
   WORKSPACE SNAPSHOT (live detection)
@@ -58,15 +81,15 @@ It detects your live sessions, shows them grouped by project, and saves to `~/.c
   Save all? [Y/n] or enter numbers (e.g. 1,3,5)
 ```
 
-### After Restart
+### Restore (after restart)
 
-Double-click `workspace-restore.bat` or run from terminal:
+Double-click `workspace-restore.bat` or run it from terminal:
 
 ```
 ~/.claude/scripts/workspace-restore.bat
 ```
 
-It opens Windows Terminal with one window per project group, each tab resuming its Claude Code session with the correct working directory, tab name, and color.
+It rebuilds your Windows Terminal layout -- one window per project, each tab resuming its session with the correct directory, name, and color:
 
 ```
   WORKSPACE RESTORE
@@ -88,31 +111,28 @@ It opens Windows Terminal with one window per project group, each tab resuming i
 
 ## How It Works
 
-1. **Process detection** -- scans running `claude.exe` processes and extracts session IDs from `--resume` flags
-2. **File activity detection** -- finds `.jsonl` session files modified in the last 30 minutes (catches IDE/SDK sessions that don't show as standalone processes)
-3. **Metadata extraction** -- reads the first user message from each session's `.jsonl` file for the summary, working directory, and git branch
-4. **Summary lookup** -- checks `sessions-index.json` for richer summaries when available
-5. **Deterministic colors** -- assigns each project a stable color using a hash function over the project name (consistent across snapshots, no configuration needed)
-6. **Group by project** -- sessions from the same working directory are grouped together
-7. **Windows Terminal integration** -- restore builds `wt.exe` CLI commands with `--title`, `--tabColor`, and `-d` (working directory) for each tab
-8. **Window separation** -- each project group opens as a separate Windows Terminal window
+1. **Detects sessions** -- scans running `claude.exe` processes and recently active session files to find every live session
+2. **Extracts metadata** -- reads the session summary, working directory, and git branch from each session's data
+3. **Groups and colors** -- clusters sessions by project and assigns each project a stable color based on its name
+4. **Saves to JSON** -- writes everything to `~/.claude/workspace.json` (editable if you want to rename tabs or change colors)
+5. **Restores via Windows Terminal** -- builds `wt.exe` commands with the right title, color, directory, and `--resume` flag for each tab
 
 ## Options
 
 | Command | Description |
 |---------|-------------|
-| `workspace-snapshot.bat` | Snapshot with default 30-minute file activity window |
+| `workspace-snapshot.bat` | Snapshot with default 30-minute activity window |
 | `workspace-snapshot.bat 60` | Snapshot with 60-minute window (catches idle sessions) |
 | `workspace-restore.bat` | Interactive restore with session/window picker |
-| `workspace-restore.bat --all` | Restore everything without asking |
+| `workspace-restore.bat --all` | Restore everything without prompting |
 
 ## Editing Your Workspace
 
-After snapshotting, you can edit `~/.claude/workspace.json` to:
+After snapshotting, edit `~/.claude/workspace.json` directly to:
+
 - Rename tabs (change the `tabName` field)
-- Change tab colors (set `tabColor` to any `#RRGGBB` hex value)
-- Rearrange sessions between groups
-- Remove sessions you don't want to restore
+- Change tab colors (set `tabColor` to any `#RRGGBB` value)
+- Rearrange or remove sessions
 
 ## Requirements
 
@@ -124,10 +144,12 @@ After snapshotting, you can edit `~/.claude/workspace.json` to:
 ## Uninstall
 
 ```powershell
-# PowerShell
 ~/.claude/scripts/uninstall.ps1
+```
 
-# Or manually
+Or remove the files manually:
+
+```powershell
 rm ~/.claude/scripts/workspace-snapshot.ps1
 rm ~/.claude/scripts/workspace-snapshot.bat
 rm ~/.claude/scripts/workspace-restore.ps1
@@ -136,8 +158,12 @@ rm ~/.claude/scripts/workspace-restore.bat
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. PRs are welcome.
 
 ## License
 
 [MIT](LICENSE)
+
+---
+
+If this tool saved you time, [give it a star](https://github.com/REMvisual/claude-workspace-snapshot). It helps others find it.
