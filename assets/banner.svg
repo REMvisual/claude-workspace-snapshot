@@ -27,33 +27,33 @@
   </g>
 
   <!-- Title -->
-  <text x="180" y="72" font-family="'Segoe UI', Arial, sans-serif" font-size="32" fill="#E8E8F0" font-weight="700">claude-workspace-snapshot</text>
+  <text x="180" y="68" font-family="'Segoe UI', Arial, sans-serif" font-size="40" fill="#E8E8F0" font-weight="700">claude-workspace-snapshot</text>
 
   <!-- One-liner -->
-  <text x="180" y="102" font-family="'Segoe UI', Arial, sans-serif" font-size="16" fill="#8B8BA0">Never lose your Claude Code tabs again.</text>
+  <text x="180" y="104" font-family="'Segoe UI', Arial, sans-serif" font-size="20" fill="#8B8BA0">Never lose your Claude Code tabs again.</text>
 
   <!-- Badge row -->
-  <g transform="translate(180, 120)">
+  <g transform="translate(180, 124)">
     <!-- MIT badge -->
-    <rect x="0" y="0" width="32" height="20" rx="3" fill="#555"/>
-    <rect x="32" y="0" width="32" height="20" rx="3" fill="#4A9BD9"/>
-    <rect x="32" y="0" width="1" height="20" fill="#555"/>
-    <text x="16" y="14" font-family="'Segoe UI', Arial, sans-serif" font-size="11" fill="#fff" text-anchor="middle">MIT</text>
-    <text x="48" y="14" font-family="'Segoe UI', Arial, sans-serif" font-size="10" fill="#fff" text-anchor="middle">v1.1</text>
+    <rect x="0" y="0" width="40" height="26" rx="4" fill="#555"/>
+    <rect x="40" y="0" width="40" height="26" rx="4" fill="#4A9BD9"/>
+    <rect x="40" y="0" width="1" height="26" fill="#555"/>
+    <text x="20" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="14" fill="#fff" text-anchor="middle">MIT</text>
+    <text x="60" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="13" fill="#fff" text-anchor="middle">v1.1</text>
 
     <!-- Claude Code badge -->
-    <rect x="76" y="0" width="68" height="20" rx="3" fill="#555"/>
-    <rect x="144" y="0" width="72" height="20" rx="3" fill="#8B5CF6"/>
-    <rect x="144" y="0" width="1" height="20" fill="#555"/>
-    <text x="110" y="14" font-family="'Segoe UI', Arial, sans-serif" font-size="11" fill="#fff" text-anchor="middle">Claude Code</text>
-    <text x="180" y="14" font-family="'Segoe UI', Arial, sans-serif" font-size="11" fill="#fff" text-anchor="middle">compatible</text>
+    <rect x="94" y="0" width="86" height="26" rx="4" fill="#555"/>
+    <rect x="180" y="0" width="90" height="26" rx="4" fill="#8B5CF6"/>
+    <rect x="180" y="0" width="1" height="26" fill="#555"/>
+    <text x="137" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="14" fill="#fff" text-anchor="middle">Claude Code</text>
+    <text x="225" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="14" fill="#fff" text-anchor="middle">compatible</text>
 
     <!-- Windows badge -->
-    <rect x="228" y="0" width="54" height="20" rx="3" fill="#555"/>
-    <rect x="282" y="0" width="56" height="20" rx="3" fill="#0078D6"/>
-    <rect x="282" y="0" width="1" height="20" fill="#555"/>
-    <text x="255" y="14" font-family="'Segoe UI', Arial, sans-serif" font-size="11" fill="#fff" text-anchor="middle">platform</text>
-    <text x="310" y="14" font-family="'Segoe UI', Arial, sans-serif" font-size="11" fill="#fff" text-anchor="middle">Windows</text>
+    <rect x="284" y="0" width="68" height="26" rx="4" fill="#555"/>
+    <rect x="352" y="0" width="70" height="26" rx="4" fill="#0078D6"/>
+    <rect x="352" y="0" width="1" height="26" fill="#555"/>
+    <text x="318" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="14" fill="#fff" text-anchor="middle">platform</text>
+    <text x="387" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="14" fill="#fff" text-anchor="middle">Windows</text>
   </g>
 
   <!-- Subtle bottom accent line -->
