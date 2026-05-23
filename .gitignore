@@ -20,3 +20,14 @@ Desktop.ini
 # Claude Code local config
 .claude/
 .beads/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+
+# OpenViking
+ov.conf
+.openviking/
+data/
