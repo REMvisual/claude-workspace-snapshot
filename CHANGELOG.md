@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-05-23
+
+### Added
+- History recovery mode: when no live sessions are detected (after reboot, blackout, or forced update), the snapshot script offers to scan recent history. Uses a 2-hour window before the last system boot, with a top-20 most-recently-active fallback. Live detection always wins — history is fallback only.
+
+### Improved
+- Snapshot output distinguishes history mode (yellow header, `[H]` source tag) from live mode (cyan header, `[P]`/`[F]` tags).
+- Friendly tip when a pre-reboot `workspace.json` already exists.
+
 ## [1.1.0] - 2026-03-29
 
 ### Added

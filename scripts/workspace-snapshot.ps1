@@ -57,12 +57,97 @@ if ($sdkLaunchers) {
 # Combine and deduplicate
 $liveIds = @($processIds + $recentIds + $sdkIds | Select-Object -Unique)
 
+# --- STEP 1b: History recovery fallback (only when no live sessions) ---
+# Triggered after a reboot/blackout where every Claude session was closed.
+# Live sessions always win — this branch is only reachable when $liveIds is empty.
+
+$historyMode = $false
+$historySubtitle = ''
+
 if ($liveIds.Count -eq 0) {
     Write-Host ""
     Write-Host "  No live Claude sessions detected." -ForegroundColor Yellow
     Write-Host "  (checked running processes + files modified in last $Minutes min)" -ForegroundColor DarkGray
     Write-Host ""
-    exit 0
+
+    # Tip if a recent workspace.json from before the last boot already exists
+    try {
+        $lastBootForTip = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime
+        if (Test-Path $workspaceFile) {
+            $wsMtime = (Get-Item $workspaceFile).LastWriteTime
+            if ($wsMtime -lt $lastBootForTip) {
+                Write-Host "  Tip: workspace.json exists from $($wsMtime.ToString('MMM dd HH:mm')) -- workspace-restore.bat may already have what you need." -ForegroundColor DarkGray
+                Write-Host ""
+            }
+        }
+    } catch {}
+
+    $histResp = Read-Host "  Look at recent history? [Y/n]"
+    if ($histResp -match '^[Nn]') {
+        Write-Host ""
+        exit 0
+    }
+
+    # Determine candidate session IDs from history.
+    try {
+        $lastBoot = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime
+    } catch {
+        $lastBoot = $null
+    }
+
+    $bootStaleDays = if ($lastBoot) { ((Get-Date) - $lastBoot).TotalDays } else { 999 }
+    $historyIds = @()
+
+    if ($lastBoot -and $bootStaleDays -le 7) {
+        # Primary: files modified in the 2 hours before last boot
+        $windowStart = $lastBoot.AddHours(-2)
+        $windowEnd   = $lastBoot
+        $historyIds = @(Get-ChildItem -Path $projectsDir -Filter '*.jsonl' -Recurse -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.BaseName -match '^[0-9a-f]{8}-' -and
+                $_.LastWriteTime -ge $windowStart -and
+                $_.LastWriteTime -le $windowEnd
+            } |
+            Sort-Object LastWriteTime -Descending |
+            ForEach-Object { $_.BaseName })
+
+        if ($historyIds.Count -gt 0) {
+            $historySubtitle = "$($historyIds.Count) sessions from before last boot ($($lastBoot.ToString('MMM dd HH:mm')) -- 2h window)"
+        }
+    }
+
+    if ($historyIds.Count -eq 0) {
+        # Fallback: top 20 most recently modified within last 30 days
+        $thirtyDaysAgo = (Get-Date).AddDays(-30)
+        $historyIds = @(Get-ChildItem -Path $projectsDir -Filter '*.jsonl' -Recurse -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.BaseName -match '^[0-9a-f]{8}-' -and
+                $_.LastWriteTime -ge $thirtyDaysAgo
+            } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 20 |
+            ForEach-Object { $_.BaseName })
+
+        if ($historyIds.Count -gt 0) {
+            if (-not $lastBoot) {
+                $historySubtitle = "$($historyIds.Count) most recently active sessions (fallback -- boot time unavailable)"
+            } elseif ($bootStaleDays -gt 7) {
+                $historySubtitle = "$($historyIds.Count) most recently active sessions (fallback -- last boot was $([int]$bootStaleDays) days ago)"
+            } else {
+                $historySubtitle = "$($historyIds.Count) most recently active sessions (fallback -- no sessions found near boot time)"
+            }
+        }
+    }
+
+    if ($historyIds.Count -eq 0) {
+        Write-Host ""
+        Write-Host "  No historical sessions found in $projectsDir." -ForegroundColor Yellow
+        Write-Host ""
+        exit 0
+    }
+
+    $liveIds = $historyIds
+    $historyMode = $true
 }
 
 # --- STEP 2: Build session metadata from .jsonl files ---
@@ -152,7 +237,7 @@ foreach ($sid in $liveIds) {
 
     $tabColor = Get-ProjectColor $project
 
-    $source = if ($processIds -contains $sid) { 'process' } else { 'file' }
+    $source = if ($historyMode) { 'history' } elseif ($processIds -contains $sid) { 'process' } else { 'file' }
 
     [void]$sessions.Add([PSCustomObject]@{
         sessionId   = $sid
@@ -186,8 +271,13 @@ $procCount = @($sessions | Where-Object { $_.source -eq 'process' }).Count
 $fileCount = @($sessions | Where-Object { $_.source -eq 'file' }).Count
 
 Write-Host ""
-Write-Host "  WORKSPACE SNAPSHOT (live detection)" -ForegroundColor Cyan
-Write-Host "  $($sessions.Count) live sessions ($procCount from processes, $fileCount from file activity)" -ForegroundColor DarkGray
+if ($historyMode) {
+    Write-Host "  WORKSPACE SNAPSHOT (history recovery)" -ForegroundColor Yellow
+    Write-Host "  $historySubtitle" -ForegroundColor DarkGray
+} else {
+    Write-Host "  WORKSPACE SNAPSHOT (live detection)" -ForegroundColor Cyan
+    Write-Host "  $($sessions.Count) live sessions ($procCount from processes, $fileCount from file activity)" -ForegroundColor DarkGray
+}
 Write-Host ""
 
 $currentGroup = ''
@@ -203,7 +293,12 @@ for ($i = 0; $i -lt $sessions.Count; $i++) {
     if ($summary.Length -gt 55) { $summary = $summary.Substring(0, 52) + '...' }
     $time = [DateTime]::Parse($s.modified).ToLocalTime().ToString('MMM dd HH:mm')
     $branch = if ($s.gitBranch -and $s.gitBranch -ne '' -and $s.gitBranch -ne 'master' -and $s.gitBranch -ne 'main') { " [$($s.gitBranch)]" } else { '' }
-    $srcTag = if ($s.source -eq 'process') { ' [P]' } else { ' [F]' }
+    $srcTag = switch ($s.source) {
+        'process' { ' [P]' }
+        'file'    { ' [F]' }
+        'history' { ' [H]' }
+        default   { '' }
+    }
 
     Write-Host "  $($i+1). " -NoNewline -ForegroundColor White
     Write-Host "$summary" -NoNewline
