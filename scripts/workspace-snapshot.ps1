@@ -284,8 +284,21 @@ foreach ($sid in $liveIds) {
 
     if ($isSidechain -or -not $firstPrompt -or -not $cwd) { continue }
 
-    # Summary and tab name (indexed summaries can also be a stale resume-caveat header)
-    $summary = if ($summaryLookup.ContainsKey($sid) -and $summaryLookup[$sid] -notmatch '^\s*(<local-command-caveat>|<command-name>|Caveat: The messages below)') { $summaryLookup[$sid] } else { $firstPrompt }
+    # Claude Code persists its live tab title as ai-title records — the LAST one is
+    # what the terminal tab actually shows. Best possible display name.
+    $aiTitle = $null
+    Select-String -Path $jsonlFile.FullName -Pattern '"type":"ai-title","aiTitle":"([^"]+)"' -ErrorAction SilentlyContinue |
+        ForEach-Object { $aiTitle = $_.Matches[0].Groups[1].Value }
+
+    # Display name precedence: live tab title > indexed summary > first prompt
+    # (indexed summaries can also be a stale resume-caveat header)
+    $summary = if ($aiTitle) {
+        $aiTitle
+    } elseif ($summaryLookup.ContainsKey($sid) -and $summaryLookup[$sid] -notmatch '^\s*(<local-command-caveat>|<command-name>|Caveat: The messages below)') {
+        $summaryLookup[$sid]
+    } else {
+        $firstPrompt
+    }
     $tabName = $summary -replace '\s+', ' ' -replace '<[^>]+>', ''
     $tabName = $tabName.Trim()
     if ($tabName.Length -gt 40) { $tabName = $tabName.Substring(0, 37) + '...' }

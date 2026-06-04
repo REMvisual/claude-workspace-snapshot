@@ -89,6 +89,19 @@ selection. Header shows:
 - Pid reuse: only logs whose pid belongs to a *currently running* happy node process
   are consulted; newest log wins when several share a pid.
 
+## Addendum (same day): native ai-title display names
+
+Claude Code persists its live terminal tab title into the session `.jsonl` as
+`{"type":"ai-title","aiTitle":"...","sessionId":"..."}` records — the **last** one is
+what the tab currently shows. Display names (and `tabName` for restore) now use, in
+order of precedence: last `aiTitle` → indexed summary (non-caveat) → first prompt.
+
+This makes session names match native Claude Code tabs exactly. Happy-coder tabs
+override the visible title with their own short titles ("TREES"), so those differ —
+acceptable: the user is migrating away from happy-coder, after which the happy
+detection path (Method H) simply finds nothing and bare-claude.exe counting plus
+ai-titles carry the feature.
+
 ## Testing
 
 Manual: run `workspace-snapshot.bat` with live tabs (happy-wrapped + bare claude.exe)
