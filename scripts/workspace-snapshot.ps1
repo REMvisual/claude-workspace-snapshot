@@ -234,6 +234,7 @@ function Get-ProjectColor {
 }
 
 $sessions = [System.Collections.ArrayList]::new()
+$haystacks = @{}   # sessionId -> normalized metadata text, used for tab-title matching
 
 # Find and read each live session's .jsonl file
 foreach ($sid in $liveIds) {
@@ -307,6 +308,8 @@ foreach ($sid in $liveIds) {
 
     $tabColor = Get-ProjectColor $project
 
+    $haystacks[$sid] = ("$aiTitle $summary $firstPrompt $project $slug").ToLower() -replace '[^a-z0-9]', ''
+
     if ($historyMode) {
         $source = 'history'; $tier = 'recent'
     } elseif ($confirmedOpen.ContainsKey($sid)) {
@@ -331,6 +334,7 @@ foreach ($sid in $liveIds) {
         group       = $project
         source      = $source
         tier        = $tier
+        tabLabel    = ''
     })
 }
 
@@ -346,6 +350,60 @@ if (-not $historyMode -and $bareOpenCount -gt 0) {
 # Sort by tier (open > maybe > recent > background), then project group, then newest first
 $tierOrder = @{ open = 0; maybe = 1; recent = 2; background = 3 }
 $sessions = @($sessions | Sort-Object @{Expression={$tierOrder[$_.tier]}}, @{Expression={$_.group}}, @{Expression={[DateTime]::Parse($_.modified)}; Descending=$true})
+
+# --- Best-effort: label sessions with the real terminal tab names ---
+# Tab titles (often manual renames) live only in the terminal -- match their words
+# against session metadata. Conservative: EVERY word of the tab name must appear,
+# one tab per session, so labels are never wild guesses (unmatched tabs stay unlabeled).
+
+# Clean the tab list: strip spinner glyphs, drop plain-shell tabs (path-like titles)
+$cleanTabs = @()
+foreach ($t in $openTabTitles) {
+    $tt = ($t -replace '[^\x20-\x7E]', '').Trim()
+    if (-not $tt -or $tt -match '[\\/]' -or $tt -match '^[A-Za-z]:') { continue }
+    $cleanTabs += $tt
+}
+
+if (-not $historyMode -and $cleanTabs.Count -gt 0) {
+    $pairs = @()
+    foreach ($tab in $cleanTabs) {
+        $tokens = @([regex]::Matches($tab.ToLower(), '[a-z0-9]{4,}') | ForEach-Object { $_.Value })
+        if ($tokens.Count -eq 0) { continue }
+        foreach ($s in $sessions) {
+            if ($s.tier -ne 'open' -and $s.tier -ne 'maybe') { continue }
+            $hay = $haystacks[$s.sessionId]
+            if (-not $hay) { continue }
+            $hits = 0
+            foreach ($tok in $tokens) {
+                $found = $hay.Contains($tok)
+                if (-not $found) {
+                    # singular form ("trees" should match "SpeedTree")
+                    $t2 = $tok.TrimEnd('s')
+                    if ($t2.Length -ge 4 -and $hay.Contains($t2)) { $found = $true }
+                }
+                if (-not $found -and $tok.Length -ge 8) {
+                    # concatenated rename ("charcterworkflow" = "charcter" + "workflow")
+                    for ($cut = 4; $cut -le ($tok.Length - 4); $cut++) {
+                        if ($hay.Contains($tok.Substring(0, $cut)) -and $hay.Contains($tok.Substring($cut))) { $found = $true; break }
+                    }
+                }
+                if ($found) { $hits++ }
+            }
+            if ($hits -eq $tokens.Count) {
+                $pairs += [PSCustomObject]@{ tab = $tab; s = $s; score = $tokens.Count }
+            }
+        }
+    }
+    # Greedy unique assignment: most specific (most words) first
+    $usedTabs = @{}
+    foreach ($pair in @($pairs | Sort-Object score -Descending)) {
+        if ($usedTabs.ContainsKey($pair.tab) -or $pair.s.tabLabel) { continue }
+        $pair.s.tabLabel = $pair.tab
+        $usedTabs[$pair.tab] = $true
+        # Restored tabs should come back with the user's own name
+        $pair.s.tabName = "$($pair.s.project)`: $($pair.tab)"
+    }
+}
 
 if ($sessions.Count -eq 0) {
     Write-Host ""
@@ -367,9 +425,9 @@ if ($historyMode) {
     Write-Host "  $historySubtitle" -ForegroundColor DarkGray
 } else {
     Write-Host "  WORKSPACE SNAPSHOT (live detection)" -ForegroundColor Cyan
-    if ($openTabTitles.Count -gt 0) {
-        $titleList = ($openTabTitles | ForEach-Object { if ($_.Length -gt 25) { $_.Substring(0, 22) + '...' } else { $_ } }) -join ', '
-        Write-Host "  Open terminal tabs ($($openTabTitles.Count)): " -NoNewline -ForegroundColor DarkGray
+    if ($cleanTabs.Count -gt 0) {
+        $titleList = ($cleanTabs | ForEach-Object { if ($_.Length -gt 25) { $_.Substring(0, 22) + '...' } else { $_ } }) -join ', '
+        Write-Host "  Open terminal tabs ($($cleanTabs.Count)): " -NoNewline -ForegroundColor DarkGray
         Write-Host $titleList -ForegroundColor Cyan
     }
     $parts = @()
@@ -420,6 +478,9 @@ for ($i = 0; $i -lt $sessions.Count; $i++) {
     }
 
     Write-Host "  $($i+1). " -NoNewline -ForegroundColor White
+    if ($s.tabLabel -and $s.tabLabel -ne $summary) {
+        Write-Host "[$($s.tabLabel)] " -NoNewline -ForegroundColor Cyan
+    }
     Write-Host "$summary" -NoNewline
     Write-Host "$branch" -NoNewline -ForegroundColor Yellow
     Write-Host "$tierTag" -NoNewline -ForegroundColor $tierColor

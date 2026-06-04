@@ -102,6 +102,22 @@ acceptable: the user is migrating away from happy-coder, after which the happy
 detection path (Method H) simply finds nothing and bare-claude.exe counting plus
 ai-titles carry the feature.
 
+## Addendum 2 (same day): best-effort tab-name labels
+
+Manual tab renames live only in the terminal (verified: not in jsonl, indexes,
+history, happy data). Per user choice, the snapshot now auto-matches the
+UIAutomation tab-title list against session metadata (ai-title + summary + first
+prompt + project + slug, normalized to alphanumerics):
+
+- EVERY word (4+ chars) of a tab name must be found — partial evidence never labels.
+- Singular fallback ("trees" matches "SpeedTree") and concatenation split
+  ("charcterworkflow" = "charcter" + "workflow").
+- Greedy unique assignment, most-specific tab first; only open/maybe tiers eligible.
+- Matched labels are shown as a cyan `[tabname]` prefix and override the saved
+  `tabName` so restore recreates the user's own names.
+- Stale labels (tab renamed for a topic the session has since left, e.g.
+  "scalability" hosting an OWL conversation) correctly stay unmatched.
+
 ## Testing
 
 Manual: run `workspace-snapshot.bat` with live tabs (happy-wrapped + bare claude.exe)
