@@ -1,7 +1,9 @@
 # workspace-snapshot.ps1
 # Captures LIVE Claude Code sessions, tiered by certainty:
-#   [OPEN]  uuid confirmed by a running tab process (claude.exe cmdline or happy-coder logs)
-#   [OPEN?] an open tab exists but its session is inferred by recency (bare claude.exe)
+#   [OPEN]  session confirmed by a running tab process (uuid in claude.exe cmdline,
+#           happy-coder logs, or process-cwd matched to its project's newest .jsonl)
+#   [OPEN?] an open tab exists but its session is inferred by recency (bare claude.exe
+#           whose cwd could not be read or matched)
 #   [F]     recent file activity only -- may already be closed
 #   [BG]    running but not a terminal tab (happy remote sessions, daemon forks)
 # Real Windows Terminal tab titles are shown as ground truth via UIAutomation.
@@ -43,6 +45,7 @@ function Test-UnderWindowsTerminal {
 $confirmedOpen = @{}   # sessionId -> $true : uuid confirmed by a process inside a terminal tab
 $confirmedBg   = @{}   # sessionId -> $true : uuid confirmed by a process NOT in a tab (remote/daemon)
 $bareOpenCount = 0     # interactive claude.exe tabs whose session id is unknowable
+$bareTabProcs  = [System.Collections.ArrayList]::new()   # the bare-tab processes themselves (for Method C)
 
 # Method A: claude.exe processes — extract uuid from --session-id / --resume
 foreach ($p in $allProcs.Values) {
@@ -56,6 +59,7 @@ foreach ($p in $allProcs.Values) {
         if ($inTab) { $confirmedOpen[$sid] = $true } else { $confirmedBg[$sid] = $true }
     } elseif ($inTab) {
         $bareOpenCount++
+        [void]$bareTabProcs.Add($p)
     }
 }
 
@@ -77,6 +81,77 @@ if (Test-Path $happyLogsDir) {
             $confirmedOpen[$sid] = $true
         } elseif (-not $confirmedOpen.ContainsKey($sid)) {
             $confirmedBg[$sid] = $true
+        }
+    }
+}
+
+# Method C: bare-tab cwd matching — a bare claude.exe (no uuid in its cmdline) still
+# betrays its session: read the process's working directory out of its PEB (read-only,
+# same-user), map it to the matching ~/.claude/projects dir, and take the newest .jsonl
+# written since that process launched. Newest tabs claim files first so two tabs in the
+# same project don't grab each other's session. Unmatched tabs stay in $bareOpenCount
+# and fall back to the recency promotion below.
+if ($bareTabProcs.Count -gt 0 -and [Environment]::Is64BitProcess) {
+    if (-not ('WsSnapProcCwd' -as [type])) {
+        try {
+            Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class WsSnapProcCwd {
+    [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("ntdll.dll")] static extern int NtQueryInformationProcess(IntPtr h, int infoClass, ref PBI info, int len, out int retLen);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool ReadProcessMemory(IntPtr h, IntPtr addr, byte[] buf, int size, out IntPtr read);
+    [StructLayout(LayoutKind.Sequential)] struct PBI { public IntPtr ExitStatus; public IntPtr PebBaseAddress; public IntPtr AffinityMask; public IntPtr BasePriority; public IntPtr UniqueProcessId; public IntPtr InheritedFromUniqueProcessId; }
+    public static string Get(uint pid) {
+        IntPtr h = OpenProcess(0x0410, false, pid); // PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
+        if (h == IntPtr.Zero) return null;
+        try {
+            PBI pbi = new PBI(); int rl;
+            if (NtQueryInformationProcess(h, 0, ref pbi, Marshal.SizeOf(typeof(PBI)), out rl) != 0) return null;
+            byte[] ptrBuf = new byte[8]; IntPtr rd;
+            if (!ReadProcessMemory(h, pbi.PebBaseAddress + 0x20, ptrBuf, 8, out rd)) return null;   // PEB+0x20 = ProcessParameters (x64)
+            IntPtr pp = (IntPtr)BitConverter.ToInt64(ptrBuf, 0);
+            byte[] us = new byte[16];
+            if (!ReadProcessMemory(h, pp + 0x38, us, 16, out rd)) return null;                      // +0x38 = CurrentDirectory.DosPath (UNICODE_STRING)
+            ushort len = BitConverter.ToUInt16(us, 0);
+            IntPtr strPtr = (IntPtr)BitConverter.ToInt64(us, 8);
+            if (len == 0 || strPtr == IntPtr.Zero) return null;
+            byte[] str = new byte[len];
+            if (!ReadProcessMemory(h, strPtr, str, len, out rd)) return null;
+            return Encoding.Unicode.GetString(str);
+        } finally { CloseHandle(h); }
+    }
+}
+'@
+        } catch {}
+    }
+    if ('WsSnapProcCwd' -as [type]) {
+        $claimedIds = @{}
+        foreach ($k in $confirmedOpen.Keys) { $claimedIds[$k] = $true }
+        foreach ($k in $confirmedBg.Keys)   { $claimedIds[$k] = $true }
+        foreach ($p in @($bareTabProcs | Sort-Object CreationDate -Descending)) {
+            $procCwd = $null
+            try { $procCwd = [WsSnapProcCwd]::Get([uint32]$p.ProcessId) } catch {}
+            if (-not $procCwd) { continue }
+            # Claude Code encodes a project dir by replacing every non-alphanumeric char with '-'
+            $projDirName = $procCwd.TrimEnd('\') -replace '[^A-Za-z0-9]', '-'
+            $projDir = Join-Path $projectsDir $projDirName
+            if (-not (Test-Path $projDir)) { continue }
+            $startSlack = $p.CreationDate.AddSeconds(-60)
+            $match = Get-ChildItem -Path $projDir -Filter '*.jsonl' -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.BaseName -match "^$uuidRe$" -and
+                    -not $claimedIds.ContainsKey($_.BaseName) -and
+                    $_.LastWriteTime -ge $startSlack
+                } |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($match) {
+                $confirmedOpen[$match.BaseName] = $true
+                $claimedIds[$match.BaseName] = $true
+                $bareOpenCount--
+            }
         }
     }
 }
