@@ -1,30 +1,76 @@
 # workspace-restore.ps1
 # Reopens Claude Code sessions in Windows Terminal tabs from a workspace snapshot.
-# Each group becomes a separate Windows Terminal window.
+# Each group becomes a separate Windows Terminal window (forced via `wt -w new`).
 # Tab names and colors are preserved from the snapshot.
 #
-# Usage: workspace-restore.bat          (interactive - pick which groups/sessions)
-#        workspace-restore.bat --all    (restore everything without asking)
+# Every entry is validated before anything opens (workspace.json is user-editable):
+# session ids must be UUIDs, colors must be #RRGGBB, dead project dirs fall back to
+# the user profile, and sessions whose .jsonl vanished are flagged [missing].
+#
+# Usage: workspace-restore.bat                (interactive - pick which groups/sessions)
+#        workspace-restore.bat --all          (restore everything without asking)
+#        workspace-restore.bat --dry-run      (print the wt commands instead of running them)
+#        workspace-restore.bat --file <path>  (restore from an alternate snapshot, e.g. a backup)
 
 param(
-    [switch]$All
+    [switch]$All,
+    [switch]$DryRun,
+    [string]$Path
 )
 
+function Show-RestoreUsage {
+    Write-Host ""
+    Write-Host "  Usage: workspace-restore.bat [--all] [--dry-run] [--file <path>]" -ForegroundColor Yellow
+    Write-Host ""
+}
+
+# GNU-style flags that don't prefix-match a param name land in $args -- parse them here.
+$badArgs = @()
+for ($ai = 0; $ai -lt $args.Count; $ai++) {
+    $a = "$($args[$ai])"
+    if ($a -match '^--?all$') { $All = $true }
+    elseif ($a -match '^--?dry-?run$') { $DryRun = $true }
+    elseif ($a -match '^--?(file|path)$' -and $ai + 1 -lt $args.Count) { $Path = "$($args[$ai + 1])"; $ai++ }
+    else { $badArgs += $a }
+}
+if ($badArgs.Count -gt 0) {
+    Write-Host ""
+    Write-Host "  Unknown argument(s): $($badArgs -join ', ')" -ForegroundColor Red
+    Show-RestoreUsage
+    exit 1
+}
+
 $claudeDir = Join-Path $env:USERPROFILE '.claude'
+$projectsDir = Join-Path $claudeDir 'projects'
 $workspaceFile = Join-Path $claudeDir 'workspace.json'
+if ($Path) {
+    $workspaceFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+}
+
+$uuidRe = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+$defaultColor = '#4A9BD9'
+
+# Titles get spliced into a cmd /c + wt.exe command line -- keep them inert even
+# if the user hand-edited workspace.json.
+function Get-SafeTabName {
+    param([string]$Name)
+    if (-not $Name) { return '' }
+    $n = $Name -replace '[\x00-\x1F"<>|&^%]', '' -replace ';', ','
+    return ($n -replace '\s+', ' ').Trim()
+}
 
 # Check workspace exists
 if (-not (Test-Path $workspaceFile)) {
     Write-Host ""
-    Write-Host "  No workspace.json found." -ForegroundColor Yellow
+    Write-Host "  No workspace file found at $workspaceFile" -ForegroundColor Yellow
     Write-Host "  Run workspace-snapshot.bat first to capture your sessions." -ForegroundColor DarkGray
     Write-Host ""
     exit 1
 }
 
-# Check wt.exe exists
+# Check wt.exe exists (a dry run is still useful without it)
 $wt = Get-Command wt -ErrorAction SilentlyContinue
-if (-not $wt) {
+if (-not $wt -and -not $DryRun) {
     Write-Host ""
     Write-Host "  Windows Terminal (wt.exe) not found." -ForegroundColor Red
     Write-Host "  Install it from the Microsoft Store." -ForegroundColor DarkGray
@@ -32,79 +78,203 @@ if (-not $wt) {
     exit 1
 }
 
-$workspace = Get-Content $workspaceFile -Raw | ConvertFrom-Json
-
-# Handle both old format (flat sessions) and new format (groups)
-$groups = @()
-if ($workspace.PSObject.Properties.Name -contains 'groups') {
-    $groups = @($workspace.groups)
-} elseif ($workspace.PSObject.Properties.Name -contains 'sessions') {
-    # Legacy flat format --treat all sessions as one group
-    $groups = @([PSCustomObject]@{
-        name     = 'All Sessions'
-        tabColor = '#4A9BD9'
-        sessions = @($workspace.sessions)
-    })
+# claude missing means every restored tab would die on launch -- say so once, upfront
+if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
+    Write-Host ""
+    Write-Host "  WARNING: 'claude' was not found on PATH. Tabs will open but resume will fail." -ForegroundColor Yellow
 }
 
-if ($groups.Count -eq 0 -or ($groups | ForEach-Object { $_.sessions.Count } | Measure-Object -Sum).Sum -eq 0) {
+try {
+    $workspace = Get-Content $workspaceFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+} catch {
     Write-Host ""
-    Write-Host "  Workspace is empty. Run workspace-snapshot.bat first." -ForegroundColor Yellow
+    Write-Host "  Could not parse $workspaceFile -- $($_.Exception.Message)" -ForegroundColor Red
     Write-Host ""
     exit 1
 }
 
+# Handle both old format (flat sessions) and new format (groups)
+$rawGroups = @()
+if ($workspace.PSObject.Properties.Name -contains 'groups') {
+    $rawGroups = @($workspace.groups)
+} elseif ($workspace.PSObject.Properties.Name -contains 'sessions') {
+    # Legacy flat format -- treat all sessions as one group
+    $rawGroups = @([PSCustomObject]@{
+        name     = 'All Sessions'
+        tabColor = $defaultColor
+        sessions = @($workspace.sessions)
+    })
+}
+
+# Which session .jsonl files still exist on disk? (one scan, used to flag [missing])
+$existingIds = @{}
+if (Test-Path $projectsDir) {
+    Get-ChildItem -Path $projectsDir -Filter '*.jsonl' -Recurse -ErrorAction SilentlyContinue |
+        ForEach-Object { $existingIds[$_.BaseName] = $true }
+}
+
+# --- Validate and normalize every entry before anything opens ---
+$warnings = @()
+$groups = @()
+foreach ($g in $rawGroups) {
+    $gName = if ($g.name) { "$($g.name)" } else { 'Sessions' }
+    $gColor = if ("$($g.tabColor)" -match '^#[0-9A-Fa-f]{6}$') { "$($g.tabColor)" } else { $defaultColor }
+
+    $normSessions = [System.Collections.ArrayList]::new()
+    foreach ($s in @($g.sessions)) {
+        if (-not $s) { continue }
+        $sid = "$($s.sessionId)".Trim().ToLower()
+        if ($sid -notmatch $uuidRe) {
+            $warnings += "Skipped entry in '$gName': sessionId '$sid' is not a valid session UUID."
+            continue
+        }
+
+        $dir = "$($s.projectPath)"
+        if (-not $dir -or -not (Test-Path -LiteralPath $dir)) {
+            $warnings += "Project dir missing for '$sid' ($dir) -- tab will open in $env:USERPROFILE."
+            $dir = $env:USERPROFILE
+        }
+
+        $title = Get-SafeTabName "$($s.tabName)"
+        if (-not $title) { $title = Get-SafeTabName (Split-Path $dir -Leaf) }
+        if (-not $title) { $title = 'claude' }
+        if ($title.Length -gt 60) { $title = $title.Substring(0, 57) + '...' }
+
+        $color = if ("$($s.tabColor)" -match '^#[0-9A-Fa-f]{6}$') { "$($s.tabColor)" } else { $gColor }
+
+        [void]$normSessions.Add([PSCustomObject]@{
+            sessionId = $sid
+            dir       = $dir
+            title     = $title
+            color     = $color
+            missing   = (-not $existingIds.ContainsKey($sid))
+        })
+    }
+    if ($normSessions.Count -gt 0) {
+        $groups += [PSCustomObject]@{
+            name     = $gName
+            tabColor = $gColor
+            sessions = @($normSessions)
+        }
+    }
+}
+
+if ($groups.Count -eq 0) {
+    Write-Host ""
+    Write-Host "  Workspace has no restorable sessions. Run workspace-snapshot.bat first." -ForegroundColor Yellow
+    foreach ($w in $warnings) { Write-Host "  ! $w" -ForegroundColor Yellow }
+    Write-Host ""
+    exit 1
+}
+
+# Builds and runs (or prints, for --dry-run) one `wt` invocation per group.
+function Open-WorkspaceWindows {
+    param([array]$WindowGroups)
+    $script:totalTabs = 0
+    $script:totalWindows = 0
+    for ($wi = 0; $wi -lt $WindowGroups.Count; $wi++) {
+        $g = $WindowGroups[$wi]
+        if ($g.sessions.Count -eq 0) { continue }
+        $script:totalWindows++
+
+        # -w new: force a fresh window per group even if the user's Windows Terminal
+        # windowingBehavior would otherwise glue everything into one window
+        $wtParts = @('-w', 'new')
+        $first = $true
+        foreach ($s in $g.sessions) {
+            $script:totalTabs++
+            if (-not $first) {
+                $wtParts += ";"
+                $wtParts += "new-tab"
+            }
+            $wtParts += "-d"
+            $wtParts += "`"$($s.dir)`""
+            $wtParts += "--title"
+            $wtParts += "`"$($s.title)`""
+            $wtParts += "--suppressApplicationTitle"
+            if ($s.color) {
+                $wtParts += "--tabColor"
+                $wtParts += "`"$($s.color)`""
+            }
+            $wtParts += "cmd"
+            $wtParts += "/k"
+            $wtParts += "`"claude --resume $($s.sessionId)`""
+            $first = $false
+        }
+
+        $wtCmd = "wt " + ($wtParts -join ' ')
+        if ($DryRun) {
+            Write-Host "  [dry-run] $wtCmd" -ForegroundColor DarkGray
+        } else {
+            Write-Host "  Opening window: $($g.name) ($($g.sessions.Count) tabs)..." -ForegroundColor Green
+            cmd /c $wtCmd
+            # Brief pause between windows so they don't collide
+            if ($wi -lt $WindowGroups.Count - 1) {
+                Start-Sleep -Milliseconds 800
+            }
+        }
+    }
+}
+
 # Show snapshot info
-$created = [DateTime]::Parse($workspace.created).ToLocalTime()
-$age = (Get-Date) - $created
-$ageStr = if ($age.TotalHours -lt 1) { "$([int]$age.TotalMinutes)m ago" }
-          elseif ($age.TotalHours -lt 24) { "$([int]$age.TotalHours)h ago" }
-          else { "$([int]$age.TotalDays)d ago" }
+$created = $null
+try { $created = [DateTime]::Parse($workspace.created).ToLocalTime() } catch {}
 
 Write-Host ""
 Write-Host "  WORKSPACE RESTORE" -ForegroundColor Cyan
-Write-Host "  Snapshot: $($created.ToString('yyyy-MM-dd HH:mm')) ($ageStr)" -ForegroundColor DarkGray
-
-if ($age.TotalHours -gt 48) {
-    Write-Host "  WARNING: This snapshot is old. Sessions may have stale context." -ForegroundColor Yellow
+if ($created) {
+    $age = (Get-Date) - $created
+    $ageStr = if ($age.TotalHours -lt 1) { "$([int]$age.TotalMinutes)m ago" }
+              elseif ($age.TotalHours -lt 24) { "$([int]$age.TotalHours)h ago" }
+              else { "$([int]$age.TotalDays)d ago" }
+    Write-Host "  Snapshot: $($created.ToString('yyyy-MM-dd HH:mm')) ($ageStr)" -ForegroundColor DarkGray
+    if ($age.TotalHours -gt 48) {
+        Write-Host "  WARNING: This snapshot is old. Sessions may have stale context." -ForegroundColor Yellow
+    }
 }
+if ($DryRun) {
+    Write-Host "  DRY RUN: commands will be printed, nothing will open." -ForegroundColor Yellow
+}
+foreach ($w in $warnings) { Write-Host "  ! $w" -ForegroundColor Yellow }
 
 Write-Host ""
 
 # Display groups and sessions
 $globalIdx = 0
-$groupMap = @{}  # maps display number -> group index
 $sessionMap = @{}  # maps display number -> (group index, session index)
 
 for ($gi = 0; $gi -lt $groups.Count; $gi++) {
     $g = $groups[$gi]
-    $groupMap[$gi] = $gi
     Write-Host "  Window $($gi+1): " -NoNewline -ForegroundColor White
     Write-Host "$($g.name)" -NoNewline -ForegroundColor Green
     Write-Host " ($($g.tabColor))" -NoNewline -ForegroundColor DarkGray
-    Write-Host " --$($g.sessions.Count) tab(s)" -ForegroundColor DarkGray
+    Write-Host " -- $($g.sessions.Count) tab(s)" -ForegroundColor DarkGray
 
     for ($si = 0; $si -lt $g.sessions.Count; $si++) {
         $globalIdx++
         $s = $g.sessions[$si]
         $sessionMap[$globalIdx] = @($gi, $si)
 
-        $tabName = if ($s.tabName) { $s.tabName } else {
-            $project = Split-Path $s.projectPath -Leaf
-            "$project"
-        }
-        if ($tabName.Length -gt 60) { $tabName = $tabName.Substring(0, 57) + '...' }
-
         Write-Host "    $globalIdx. " -NoNewline -ForegroundColor DarkGray
-        Write-Host "$tabName" -ForegroundColor White
+        Write-Host "$($s.title)" -NoNewline -ForegroundColor White
+        if ($s.missing) {
+            Write-Host " [missing]" -NoNewline -ForegroundColor Red
+        }
+        Write-Host ""
     }
     Write-Host ""
 }
 
+if (@($groups.sessions | Where-Object { $_.missing }).Count -gt 0) {
+    Write-Host "  [missing] = session file no longer exists; the tab will still open in the" -ForegroundColor DarkGray
+    Write-Host "  right directory but 'claude --resume' will report the session as gone." -ForegroundColor DarkGray
+    Write-Host ""
+}
+
 # Select what to restore
-$selectedGroups = @()
+$windowGroups = @()
 if ($All) {
-    $selectedGroups = 0..($groups.Count - 1)
+    $windowGroups = @($groups)
 } else {
     Write-Host "  Options:" -ForegroundColor DarkGray
     Write-Host "    Enter    = restore all windows" -ForegroundColor DarkGray
@@ -115,145 +285,54 @@ if ($All) {
     $response = Read-Host "  Choice"
 
     if ($response -eq '' -or $response -match '^[Yy]') {
-        $selectedGroups = 0..($groups.Count - 1)
+        $windowGroups = @($groups)
     } elseif ($response -match '^[Nn]') {
         Write-Host "  Cancelled." -ForegroundColor Yellow
         Write-Host ""
         exit 0
-    } elseif ($response -match 'w') {
+    } elseif ($response -match '(?i)w\s*\d') {
         # Window selection mode: w1, w2, etc.
-        $selectedGroups = @($response -split '[,\s]+' | ForEach-Object {
+        $selectedIdx = @($response -split '[,\s]+' | ForEach-Object {
             $num = 0
             $cleaned = $_ -replace '[wW]', ''
             if ([int]::TryParse($cleaned.Trim(), [ref]$num)) { $num - 1 }
         } | Where-Object { $_ -ge 0 -and $_ -lt $groups.Count } | Select-Object -Unique)
+        $windowGroups = @($selectedIdx | ForEach-Object { $groups[$_] })
     } else {
-        # Individual tab selection: 1, 3, 5, etc.
-        # We'll collect selected sessions and group them for opening
+        # Individual tab selection: 1, 3, 5, etc. -- regroup picks by their original window
         $selectedTabs = @($response -split '[,\s]+' | ForEach-Object {
             $num = 0
             if ([int]::TryParse($_.Trim(), [ref]$num)) { $num }
         } | Where-Object { $sessionMap.ContainsKey($_) } | Select-Object -Unique)
 
-        if ($selectedTabs.Count -eq 0) {
-            Write-Host "  No valid selection." -ForegroundColor Yellow
-            Write-Host ""
-            exit 0
-        }
-
-        # Group selected tabs by their original group for proper windowing
         $tabGroups = [ordered]@{}
         foreach ($tabNum in $selectedTabs) {
             $gi, $si = $sessionMap[$tabNum]
             $g = $groups[$gi]
-            $gName = $g.name
-            if (-not $tabGroups.Contains($gName)) {
-                $tabGroups[$gName] = [PSCustomObject]@{
-                    name     = $gName
+            if (-not $tabGroups.Contains($g.name)) {
+                $tabGroups[$g.name] = [PSCustomObject]@{
+                    name     = $g.name
                     tabColor = $g.tabColor
                     sessions = [System.Collections.ArrayList]::new()
                 }
             }
-            [void]$tabGroups[$gName].sessions.Add($g.sessions[$si])
+            [void]$tabGroups[$g.name].sessions.Add($g.sessions[$si])
         }
-
-        # Open each tab group as a window
-        $totalTabs = 0
-        foreach ($tg in $tabGroups.Values) {
-            $wtParts = @()
-            $first = $true
-
-            foreach ($s in $tg.sessions) {
-                $totalTabs++
-                $tabTitle = if ($s.tabName) { $s.tabName } else { Split-Path $s.projectPath -Leaf }
-                $tabColor = if ($s.tabColor) { $s.tabColor } else { $tg.tabColor }
-                $dir = $s.projectPath
-                $id = $s.sessionId
-
-                if (-not $first) {
-                    $wtParts += ";"
-                    $wtParts += "new-tab"
-                }
-                $wtParts += "-d"
-                $wtParts += "`"$dir`""
-                $wtParts += "--title"
-                $wtParts += "`"$tabTitle`""
-                $wtParts += "--suppressApplicationTitle"
-                if ($tabColor) {
-                    $wtParts += "--tabColor"
-                    $wtParts += "`"$tabColor`""
-                }
-                $wtParts += "cmd"
-                $wtParts += "/k"
-                $wtParts += "`"claude --resume $id`""
-                $first = $false
-            }
-
-            $wtCmd = "wt " + ($wtParts -join ' ')
-            cmd /c $wtCmd
-            Start-Sleep -Milliseconds 500  # brief pause between windows
-        }
-
-        Write-Host "  Opened $totalTabs tab(s) in $($tabGroups.Count) window(s)." -ForegroundColor Green
-        Write-Host ""
-        exit 0
+        $windowGroups = @($tabGroups.Values)
     }
 }
 
-if ($selectedGroups.Count -eq 0) {
-    Write-Host "  No valid groups selected." -ForegroundColor Yellow
+if ($windowGroups.Count -eq 0) {
+    Write-Host "  No valid selection." -ForegroundColor Yellow
     Write-Host ""
     exit 0
 }
 
-# Open each selected group as a separate Windows Terminal window
-$totalTabs = 0
-$totalWindows = 0
+Open-WorkspaceWindows -WindowGroups $windowGroups
 
-foreach ($gi in $selectedGroups) {
-    $g = $groups[$gi]
-    if ($g.sessions.Count -eq 0) { continue }
-
-    $totalWindows++
-    $wtParts = @()
-    $first = $true
-
-    foreach ($s in $g.sessions) {
-        $totalTabs++
-        $tabTitle = if ($s.tabName) { $s.tabName } else { Split-Path $s.projectPath -Leaf }
-        $tabColor = if ($s.tabColor) { $s.tabColor } else { $g.tabColor }
-        $dir = $s.projectPath
-        $id = $s.sessionId
-
-        if (-not $first) {
-            $wtParts += ";"
-            $wtParts += "new-tab"
-        }
-        $wtParts += "-d"
-        $wtParts += "`"$dir`""
-        $wtParts += "--title"
-        $wtParts += "`"$tabTitle`""
-        $wtParts += "--suppressApplicationTitle"
-        if ($tabColor) {
-            $wtParts += "--tabColor"
-            $wtParts += "`"$tabColor`""
-        }
-        $wtParts += "cmd"
-        $wtParts += "/k"
-        $wtParts += "`"claude --resume $id`""
-        $first = $false
-    }
-
-    $wtCmd = "wt " + ($wtParts -join ' ')
-
-    Write-Host "  Opening window: $($g.name) ($($g.sessions.Count) tabs)..." -ForegroundColor Green
-    cmd /c $wtCmd
-
-    # Brief pause between windows so they don't collide
-    if ($gi -ne $selectedGroups[-1]) {
-        Start-Sleep -Milliseconds 800
-    }
+if ($DryRun) {
+    Write-Host "  Dry run: $totalTabs tab(s) across $totalWindows window(s) would open." -ForegroundColor Green
+} else {
+    Write-Host "  Done! Opened $totalTabs tab(s) across $totalWindows window(s)." -ForegroundColor Green
 }
-
-Write-Host "  Done! Opened $totalTabs tab(s) across $totalWindows window(s)." -ForegroundColor Green
 Write-Host ""

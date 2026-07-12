@@ -8,20 +8,82 @@
 #   [BG]    running but not a terminal tab (happy remote sessions, daemon forks)
 # Real Windows Terminal tab titles are shown as ground truth via UIAutomation.
 #
-# Usage: workspace-snapshot.bat           (default: process detection + 30min file window)
-#        workspace-snapshot.bat [minutes]  (custom file activity window, e.g. 60)
+# Usage: workspace-snapshot.bat                      (default: 30min file window, interactive)
+#        workspace-snapshot.bat 60                   (custom file activity window in minutes)
+#        workspace-snapshot.bat --auto               (non-interactive: save everything detected)
+#        workspace-snapshot.bat --auto --open-only   (non-interactive: save only open/likely-open tabs)
+#        workspace-snapshot.bat --out <file>         (write snapshot somewhere other than workspace.json)
+#
+# The previous workspace.json is backed up to workspace-backups\ (newest 5 kept)
+# before every save, and the new file is written atomically (temp + rename).
 
 param(
-    [int]$Minutes = 30
+    [int]$Minutes = 30,
+    [switch]$Auto,
+    [switch]$OpenOnly,
+    [string]$OutFile
 )
+
+function Show-SnapshotUsage {
+    Write-Host ""
+    Write-Host "  Usage: workspace-snapshot.bat [minutes] [--auto] [--open-only] [--out <file>]" -ForegroundColor Yellow
+    Write-Host ""
+}
+
+# GNU-style flags that don't prefix-match a param name land in $args -- parse them here.
+$badArgs = @()
+for ($ai = 0; $ai -lt $args.Count; $ai++) {
+    $a = "$($args[$ai])"
+    $n = 0
+    if ([int]::TryParse($a, [ref]$n)) { $Minutes = $n }
+    elseif ($a -match '^--?auto$') { $Auto = $true }
+    elseif ($a -match '^--?open-?only$') { $OpenOnly = $true }
+    elseif ($a -match '^--?out(-?file)?$' -and $ai + 1 -lt $args.Count) { $OutFile = "$($args[$ai + 1])"; $ai++ }
+    else { $badArgs += $a }
+}
+if ($badArgs.Count -gt 0) {
+    Write-Host ""
+    Write-Host "  Unknown argument(s): $($badArgs -join ', ')" -ForegroundColor Red
+    Show-SnapshotUsage
+    exit 1
+}
+if ($Minutes -lt 1) { $Minutes = 30 }
 
 $claudeDir = Join-Path $env:USERPROFILE '.claude'
 $projectsDir = Join-Path $claudeDir 'projects'
 $workspaceFile = Join-Path $claudeDir 'workspace.json'
+if ($OutFile) {
+    $workspaceFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutFile)
+}
+
+# Tab titles end up inside a cmd /c + wt.exe command line on restore -- keep them inert.
+function Get-SafeTabName {
+    param([string]$Name)
+    if (-not $Name) { return '' }
+    $n = $Name -replace '[\x00-\x1F"<>|&^%]', '' -replace ';', ','
+    return ($n -replace '\s+', ' ').Trim()
+}
 
 # --- STEP 1: Detect live session IDs (tiered by certainty) ---
 
 $uuidRe = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+
+# One recursive scan of ~/.claude/projects feeds every later step (Methods B/C,
+# history mode, and per-session metadata) instead of rescanning per session.
+$allJsonl = @()
+if (Test-Path $projectsDir) {
+    $allJsonl = @(Get-ChildItem -Path $projectsDir -Filter '*.jsonl' -Recurse -ErrorAction SilentlyContinue)
+}
+$jsonlById = @{}    # sessionId -> FileInfo (first match wins, like the old per-id search)
+$jsonlByDir = @{}   # lowercased project dir -> [FileInfo]
+foreach ($f in $allJsonl) {
+    if ($f.BaseName -match "^$uuidRe$" -and -not $jsonlById.ContainsKey($f.BaseName)) {
+        $jsonlById[$f.BaseName] = $f
+    }
+    $dirKey = $f.DirectoryName.ToLower()
+    if (-not $jsonlByDir.ContainsKey($dirKey)) { $jsonlByDir[$dirKey] = [System.Collections.ArrayList]::new() }
+    [void]$jsonlByDir[$dirKey].Add($f)
+}
 
 # Snapshot the full process table once
 $allProcs = @{}
@@ -137,10 +199,10 @@ public static class WsSnapProcCwd {
             if (-not $procCwd) { continue }
             # Claude Code encodes a project dir by replacing every non-alphanumeric char with '-'
             $projDirName = $procCwd.TrimEnd('\') -replace '[^A-Za-z0-9]', '-'
-            $projDir = Join-Path $projectsDir $projDirName
-            if (-not (Test-Path $projDir)) { continue }
+            $projDirKey = (Join-Path $projectsDir $projDirName).ToLower()
+            if (-not $jsonlByDir.ContainsKey($projDirKey)) { continue }
             $startSlack = $p.CreationDate.AddSeconds(-60)
-            $match = Get-ChildItem -Path $projDir -Filter '*.jsonl' -ErrorAction SilentlyContinue |
+            $match = $jsonlByDir[$projDirKey] |
                 Where-Object {
                     $_.BaseName -match "^$uuidRe$" -and
                     -not $claimedIds.ContainsKey($_.BaseName) -and
@@ -175,10 +237,9 @@ try {
 
 # Method B: .jsonl files modified recently (catches sessions invisible to A/H)
 $recentCutoff = (Get-Date).AddMinutes(-$Minutes)
-$recentIds = @()
-Get-ChildItem -Path $projectsDir -Filter '*.jsonl' -Recurse -ErrorAction SilentlyContinue |
+$recentIds = @($allJsonl |
     Where-Object { $_.LastWriteTime -gt $recentCutoff -and $_.BaseName -match '^[0-9a-f]{8}-' } |
-    ForEach-Object { $recentIds += $_.BaseName }
+    ForEach-Object { $_.BaseName })
 
 # Combine and deduplicate
 $processIds = @($confirmedOpen.Keys) + @($confirmedBg.Keys)
@@ -196,6 +257,14 @@ if ($liveIds.Count -eq 0) {
     Write-Host "  No live Claude sessions detected." -ForegroundColor Yellow
     Write-Host "  (checked running processes + files modified in last $Minutes min)" -ForegroundColor DarkGray
     Write-Host ""
+
+    if ($Auto) {
+        # A scheduled/non-interactive run must never overwrite a good pre-reboot
+        # snapshot with history guesses. Leave workspace.json alone and bail out.
+        Write-Host "  Auto mode: nothing saved (workspace.json left untouched)." -ForegroundColor DarkGray
+        Write-Host ""
+        exit 0
+    }
 
     # Tip if a recent workspace.json from before the last boot already exists
     try {
@@ -229,7 +298,7 @@ if ($liveIds.Count -eq 0) {
         # Primary: files modified in the 2 hours before last boot
         $windowStart = $lastBoot.AddHours(-2)
         $windowEnd   = $lastBoot
-        $historyIds = @(Get-ChildItem -Path $projectsDir -Filter '*.jsonl' -Recurse -ErrorAction SilentlyContinue |
+        $historyIds = @($allJsonl |
             Where-Object {
                 $_.BaseName -match '^[0-9a-f]{8}-' -and
                 $_.LastWriteTime -ge $windowStart -and
@@ -246,7 +315,7 @@ if ($liveIds.Count -eq 0) {
     if ($historyIds.Count -eq 0) {
         # Fallback: top 20 most recently modified within last 30 days
         $thirtyDaysAgo = (Get-Date).AddDays(-30)
-        $historyIds = @(Get-ChildItem -Path $projectsDir -Filter '*.jsonl' -Recurse -ErrorAction SilentlyContinue |
+        $historyIds = @($allJsonl |
             Where-Object {
                 $_.BaseName -match '^[0-9a-f]{8}-' -and
                 $_.LastWriteTime -ge $thirtyDaysAgo
@@ -311,11 +380,10 @@ function Get-ProjectColor {
 $sessions = [System.Collections.ArrayList]::new()
 $haystacks = @{}   # sessionId -> normalized metadata text, used for tab-title matching
 
-# Find and read each live session's .jsonl file
+# Read each live session's .jsonl file (located via the index built in STEP 1)
 foreach ($sid in $liveIds) {
-    # Find the .jsonl file across all project dirs
-    $jsonlFile = Get-ChildItem -Path $projectsDir -Filter "$sid.jsonl" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $jsonlFile) { continue }
+    if (-not $jsonlById.ContainsKey($sid)) { continue }
+    $jsonlFile = $jsonlById[$sid]
 
     $firstPrompt = $null
     $cwd = $null
@@ -375,8 +443,7 @@ foreach ($sid in $liveIds) {
     } else {
         $firstPrompt
     }
-    $tabName = $summary -replace '\s+', ' ' -replace '<[^>]+>', ''
-    $tabName = $tabName.Trim()
+    $tabName = Get-SafeTabName ($summary -replace '<[^>]+>', '')
     if ($tabName.Length -gt 40) { $tabName = $tabName.Substring(0, 37) + '...' }
 
     $project = Split-Path $cwd -Leaf
@@ -400,7 +467,7 @@ foreach ($sid in $liveIds) {
         projectPath = $cwd
         project     = $project
         summary     = $summary
-        tabName     = "$project`: $tabName"
+        tabName     = Get-SafeTabName "$project`: $tabName"
         tabColor    = $tabColor
         firstPrompt = if ($firstPrompt.Length -gt 80) { $firstPrompt.Substring(0, 77) + '...' } else { $firstPrompt }
         modified    = $jsonlFile.LastWriteTime.ToString('o')
@@ -420,6 +487,11 @@ if (-not $historyMode -and $bareOpenCount -gt 0) {
         Sort-Object @{Expression={[DateTime]::Parse($_.modified)}; Descending=$true} |
         Select-Object -First $bareOpenCount) |
         ForEach-Object { $_.tier = 'maybe' }
+}
+
+# --open-only: keep just the tabs that are (probably) on screen right now
+if ($OpenOnly -and -not $historyMode) {
+    $sessions = @($sessions | Where-Object { $_.tier -in @('open', 'maybe') })
 }
 
 # Sort by tier (open > maybe > recent > background), then project group, then newest first
@@ -476,13 +548,17 @@ if (-not $historyMode -and $cleanTabs.Count -gt 0) {
         $pair.s.tabLabel = $pair.tab
         $usedTabs[$pair.tab] = $true
         # Restored tabs should come back with the user's own name
-        $pair.s.tabName = "$($pair.s.project)`: $($pair.tab)"
+        $pair.s.tabName = Get-SafeTabName "$($pair.s.project)`: $($pair.tab)"
     }
 }
 
 if ($sessions.Count -eq 0) {
     Write-Host ""
-    Write-Host "  No valid live sessions found." -ForegroundColor Yellow
+    if ($OpenOnly) {
+        Write-Host "  No open sessions found (--open-only)." -ForegroundColor Yellow
+    } else {
+        Write-Host "  No valid live sessions found." -ForegroundColor Yellow
+    }
     Write-Host ""
     exit 0
 }
@@ -564,23 +640,29 @@ for ($i = 0; $i -lt $sessions.Count; $i++) {
 
 Write-Host ""
 
-# Ask user which sessions to save (default: all; 'o' = open + likely-open tabs only)
-$response = Read-Host "  Save all? [Y/n/o=open only] or enter numbers (e.g. 1,3,5)"
-
+# Ask user which sessions to save (default: all; 'o' = open + likely-open tabs only).
+# In --auto mode, save everything shown without prompting (scheduled-task friendly).
 $selected = @()
-if ($response -eq '' -or $response -match '^[Yy]') {
+if ($Auto) {
+    Write-Host "  Auto mode: saving all $($sessions.Count) session(s)." -ForegroundColor DarkGray
     $selected = 0..($sessions.Count - 1)
-} elseif ($response -match '^[Oo]') {
-    $selected = @(0..($sessions.Count - 1) | Where-Object { $sessions[$_].tier -in @('open', 'maybe') })
-} elseif ($response -match '^[Nn]') {
-    Write-Host "  Cancelled." -ForegroundColor Yellow
-    Write-Host ""
-    exit 0
 } else {
-    $selected = @($response -split '[,\s]+' | ForEach-Object {
-        $num = 0
-        if ([int]::TryParse($_.Trim(), [ref]$num)) { $num - 1 }
-    } | Where-Object { $_ -ge 0 -and $_ -lt $sessions.Count } | Select-Object -Unique)
+    $response = Read-Host "  Save all? [Y/n/o=open only] or enter numbers (e.g. 1,3,5)"
+
+    if ($response -eq '' -or $response -match '^[Yy]') {
+        $selected = 0..($sessions.Count - 1)
+    } elseif ($response -match '^[Oo]') {
+        $selected = @(0..($sessions.Count - 1) | Where-Object { $sessions[$_].tier -in @('open', 'maybe') })
+    } elseif ($response -match '^[Nn]') {
+        Write-Host "  Cancelled." -ForegroundColor Yellow
+        Write-Host ""
+        exit 0
+    } else {
+        $selected = @($response -split '[,\s]+' | ForEach-Object {
+            $num = 0
+            if ([int]::TryParse($_.Trim(), [ref]$num)) { $num - 1 }
+        } | Where-Object { $_ -ge 0 -and $_ -lt $sessions.Count } | Select-Object -Unique)
+    }
 }
 
 if ($selected.Count -eq 0) {
@@ -615,9 +697,32 @@ $workspace = [PSCustomObject]@{
     groups  = $groupList
 }
 
-$workspace | ConvertTo-Json -Depth 5 | Set-Content $workspaceFile -Encoding UTF8
+try {
+    # Keep the last few snapshots: a bad save must never destroy the one good
+    # pre-reboot workspace.json. Newest 5 backups are kept next to the target.
+    if (Test-Path $workspaceFile) {
+        $backupDir = Join-Path (Split-Path -Parent $workspaceFile) 'workspace-backups'
+        if (-not (Test-Path $backupDir)) {
+            New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+        }
+        $stamp = (Get-Item $workspaceFile).LastWriteTime.ToString('yyyyMMdd-HHmmss')
+        Copy-Item $workspaceFile (Join-Path $backupDir "workspace-$stamp.json") -Force
+        Get-ChildItem -Path $backupDir -Filter 'workspace-*.json' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -Skip 5 |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
+
+    # Atomic write: temp file + rename, so a crash mid-write can't truncate the snapshot
+    $tmpFile = "$workspaceFile.tmp"
+    $workspace | ConvertTo-Json -Depth 6 | Set-Content $tmpFile -Encoding UTF8
+    Move-Item -Path $tmpFile -Destination $workspaceFile -Force
+} catch {
+    Write-Host "  ERROR: could not write $workspaceFile -- $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host ""
+    exit 1
+}
 
 $tabCount = ($groupList | ForEach-Object { $_.sessions.Count } | Measure-Object -Sum).Sum
-Write-Host "  Saved $tabCount session(s) in $($groupList.Count) window group(s)." -ForegroundColor Green
+Write-Host "  Saved $tabCount session(s) in $($groupList.Count) window group(s) to $workspaceFile" -ForegroundColor Green
 Write-Host "  Run workspace-restore.bat to reopen after restart." -ForegroundColor DarkGray
 Write-Host ""

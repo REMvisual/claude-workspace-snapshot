@@ -17,7 +17,9 @@
           "gitBranch": "feature/forecast-cache",
           "slug": null,
           "group": "skywatch",
-          "source": "process"
+          "source": "process",
+          "tier": "open",
+          "tabLabel": ""
         },
         {
           "sessionId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
@@ -31,7 +33,9 @@
           "gitBranch": "main",
           "slug": null,
           "group": "skywatch",
-          "source": "file"
+          "source": "file",
+          "tier": "recent",
+          "tabLabel": ""
         }
       ]
     },
@@ -51,7 +55,9 @@
           "gitBranch": "main",
           "slug": null,
           "group": "taskflow-api",
-          "source": "process"
+          "source": "process",
+          "tier": "open",
+          "tabLabel": ""
         }
       ]
     },
@@ -71,7 +77,9 @@
           "gitBranch": "feature/threading",
           "slug": null,
           "group": "chatterbox",
-          "source": "process"
+          "source": "process",
+          "tier": "open",
+          "tabLabel": ""
         },
         {
           "sessionId": "e5f6a7b8-9012-3456-efgh-345678901234",
@@ -85,7 +93,9 @@
           "gitBranch": "feature/typing-indicators",
           "slug": null,
           "group": "chatterbox",
-          "source": "file"
+          "source": "file",
+          "tier": "recent",
+          "tabLabel": ""
         }
       ]
     }

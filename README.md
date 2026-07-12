@@ -120,8 +120,38 @@ It rebuilds your Windows Terminal layout -- one window per project, each tab res
 |---------|-------------|
 | `workspace-snapshot.bat` | Snapshot with default 30-minute activity window |
 | `workspace-snapshot.bat 60` | Snapshot with 60-minute window (catches idle sessions) |
+| `workspace-snapshot.bat --auto` | Non-interactive: save everything detected (for scheduled tasks) |
+| `workspace-snapshot.bat --auto --open-only` | Non-interactive: save only tabs that are confirmed/likely open |
+| `workspace-snapshot.bat --out <file>` | Write the snapshot to an alternate file (named workspaces) |
 | `workspace-restore.bat` | Interactive restore with session/window picker |
 | `workspace-restore.bat --all` | Restore everything without prompting |
+| `workspace-restore.bat --dry-run` | Print the exact `wt` commands without opening anything |
+| `workspace-restore.bat --file <path>` | Restore from an alternate snapshot (e.g. a rotated backup) |
+
+## Automatic Backups
+
+Every save first copies the existing `workspace.json` into
+`~/.claude/workspace-backups/workspace-<timestamp>.json` (the newest 5 are kept),
+and the new snapshot is written atomically — a crash mid-save can never destroy
+your one good pre-reboot snapshot. Restore an older one with:
+
+```
+workspace-restore.bat --file %USERPROFILE%\.claude\workspace-backups\workspace-20260711-090000.json
+```
+
+## Auto-Snapshot on a Schedule
+
+`--auto` makes the snapshot safe to run unattended: it saves everything it detects
+without prompting, and if it finds *no* live sessions (e.g. it fires right after a
+reboot) it exits without touching your existing `workspace.json`. To snapshot every
+hour with Task Scheduler:
+
+```
+schtasks /create /tn "Claude Workspace Auto-Snapshot" /sc hourly ^
+  /tr "powershell -NoProfile -ExecutionPolicy Bypass -File %USERPROFILE%\.claude\scripts\workspace-snapshot.ps1 --auto"
+```
+
+With that in place, a blackout can cost you at most an hour of workspace state.
 
 ## Editing Your Workspace
 
