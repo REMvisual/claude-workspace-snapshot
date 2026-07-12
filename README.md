@@ -36,13 +36,13 @@ That's it. Your sessions come back in the right directories, with the right tab 
 **PowerShell (recommended):**
 
 ```powershell
-irm https://raw.githubusercontent.com/REMvisual/claude-workspace-snapshot/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/REMvisual/claude-workspace-snapshot/master/install.ps1 | iex
 ```
 
 **Git Bash / WSL:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/REMvisual/claude-workspace-snapshot/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/REMvisual/claude-workspace-snapshot/master/install.sh | bash
 ```
 
 **Manual:**

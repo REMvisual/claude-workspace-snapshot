@@ -1,13 +1,13 @@
 # claude-workspace-snapshot installer
-# Usage: irm https://raw.githubusercontent.com/REMvisual/claude-workspace-snapshot/main/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/REMvisual/claude-workspace-snapshot/master/install.ps1 | iex
 #
 # Pin to a specific version:
-#   $env:CWSS_BRANCH='v1.0.0'; irm https://raw.githubusercontent.com/REMvisual/claude-workspace-snapshot/main/install.ps1 | iex
+#   $env:CWSS_BRANCH='v1.0.0'; irm https://raw.githubusercontent.com/REMvisual/claude-workspace-snapshot/master/install.ps1 | iex
 
 $ErrorActionPreference = 'Stop'
 
 $repo = 'REMvisual/claude-workspace-snapshot'
-$branch = if ($env:CWSS_BRANCH) { $env:CWSS_BRANCH } else { 'main' }
+$branch = if ($env:CWSS_BRANCH) { $env:CWSS_BRANCH } else { 'master' }
 $baseUrl = "https://raw.githubusercontent.com/$repo/$branch/scripts"
 $scriptsDir = Join-Path $env:USERPROFILE '.claude\scripts'
 
