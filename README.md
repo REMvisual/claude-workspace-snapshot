@@ -3,7 +3,7 @@
 </p>
 
 
-[![Download Latest](https://img.shields.io/github/v/release/REMvisual/claude-workspace-snapshot?style=for-the-badge&label=Download&color=blue)](https://github.com/REMvisual/claude-handoff/releases/latest)
+[![Download Latest](https://img.shields.io/github/v/release/REMvisual/claude-workspace-snapshot?style=for-the-badge&label=Download&color=blue)](https://github.com/REMvisual/claude-workspace-snapshot/releases/latest)
 ![Views](https://komarev.com/ghpvc/?username=REMvisualclaude-workspace-snapshot&label=Views&color=brightgreen&style=for-the-badge)
 
 
