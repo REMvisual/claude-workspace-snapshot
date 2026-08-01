@@ -150,9 +150,10 @@ if (Test-Path $happyLogsDir) {
 # Method C: bare-tab cwd matching — a bare claude.exe (no uuid in its cmdline) still
 # betrays its session: read the process's working directory out of its PEB (read-only,
 # same-user), map it to the matching ~/.claude/projects dir, and take the newest .jsonl
-# written since that process launched. Newest tabs claim files first so two tabs in the
-# same project don't grab each other's session. Unmatched tabs stay in $bareOpenCount
-# and fall back to the recency promotion below.
+# CREATED since that process launched (a bare claude.exe creates its session file within
+# seconds of starting; /clear successors are created later in its lifetime). Newest tabs
+# claim files first so two tabs in the same project don't grab each other's session.
+# Unmatched tabs stay in $bareOpenCount and fall back to the recency promotion below.
 if ($bareTabProcs.Count -gt 0 -and [Environment]::Is64BitProcess) {
     if (-not ('WsSnapProcCwd' -as [type])) {
         try {
@@ -202,13 +203,20 @@ public static class WsSnapProcCwd {
             $projDirKey = (Join-Path $projectsDir $projDirName).ToLower()
             if (-not $jsonlByDir.ContainsKey($projDirKey)) { continue }
             $startSlack = $p.CreationDate.AddSeconds(-60)
-            $match = $jsonlByDir[$projDirKey] |
+            $candidates = @($jsonlByDir[$projDirKey] |
                 Where-Object {
                     $_.BaseName -match "^$uuidRe$" -and
                     -not $claimedIds.ContainsKey($_.BaseName) -and
                     $_.LastWriteTime -ge $startSlack
-                } |
-                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                })
+            # Files created before the process belong to OTHER sessions, however fresh
+            # their mtime looks (a tab closed minutes ago, a remote resume of an old
+            # session). Claiming by mtime alone let such a file steal the tab's identity
+            # and pushed the tab's real session out of the list entirely. Fall back to
+            # pure recency only when no created-after file exists (in-app /resume).
+            $ownCreated = @($candidates | Where-Object { $_.CreationTime -ge $startSlack })
+            if ($ownCreated.Count -gt 0) { $candidates = $ownCreated }
+            $match = $candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             if ($match) {
                 $confirmedOpen[$match.BaseName] = $true
                 $claimedIds[$match.BaseName] = $true
@@ -378,7 +386,8 @@ function Get-ProjectColor {
 }
 
 $sessions = [System.Collections.ArrayList]::new()
-$haystacks = @{}   # sessionId -> normalized metadata text, used for tab-title matching
+$haystacks = @{}         # sessionId -> normalized metadata text, used for tab-title matching
+$strongHaystacks = @{}   # sessionId -> same minus firstPrompt (title/summary/project/slug only)
 
 # Read each live session's .jsonl file (located via the index built in STEP 1)
 foreach ($sid in $liveIds) {
@@ -451,6 +460,7 @@ foreach ($sid in $liveIds) {
     $tabColor = Get-ProjectColor $project
 
     $haystacks[$sid] = ("$aiTitle $summary $firstPrompt $project $slug").ToLower() -replace '[^a-z0-9]', ''
+    $strongHaystacks[$sid] = ("$aiTitle $summary $project $slug").ToLower() -replace '[^a-z0-9]', ''
 
     if ($historyMode) {
         $source = 'history'; $tier = 'recent'
@@ -512,13 +522,56 @@ foreach ($t in $openTabTitles) {
 }
 
 if (-not $historyMode -and $cleanTabs.Count -gt 0) {
+    # Damerau-Levenshtein (optimal string alignment) so typo'd renames still find
+    # their project: "defromer" -> "deformers" is one transposition + one insert.
+    # Rolling 1-D rows: Windows PowerShell 5.1 cannot parse 2-D array indexing here.
+    function Get-EditDistance {
+        param([string]$A, [string]$B)
+        $la = $A.Length; $lb = $B.Length
+        if ($la -eq 0) { return $lb }
+        if ($lb -eq 0) { return $la }
+        $prev2 = New-Object 'int[]' ($lb + 1)   # row x-2 (for transpositions)
+        $prev  = New-Object 'int[]' ($lb + 1)   # row x-1
+        $curr  = New-Object 'int[]' ($lb + 1)   # row x
+        for ($y = 0; $y -le $lb; $y++) { $prev[$y] = $y }
+        for ($x = 1; $x -le $la; $x++) {
+            $curr[0] = $x
+            for ($y = 1; $y -le $lb; $y++) {
+                $cost = if ($A[$x - 1] -eq $B[$y - 1]) { 0 } else { 1 }
+                $best = $prev[$y] + 1
+                $t = $curr[$y - 1] + 1
+                if ($t -lt $best) { $best = $t }
+                $t = $prev[$y - 1] + $cost
+                if ($t -lt $best) { $best = $t }
+                if ($x -gt 1 -and $y -gt 1 -and $A[$x - 1] -eq $B[$y - 2] -and $A[$x - 2] -eq $B[$y - 1]) {
+                    $t = $prev2[$y - 2] + 1
+                    if ($t -lt $best) { $best = $t }
+                }
+                $curr[$y] = $best
+            }
+            $tmp = $prev2; $prev2 = $prev; $prev = $curr; $curr = $tmp
+        }
+        return $prev[$lb]
+    }
+
+    $openSessions = @($sessions | Where-Object { $_.tier -in @('open', 'maybe') })
+    $byProject = @{}
+    foreach ($s in $openSessions) {
+        if (-not $byProject.ContainsKey($s.project)) { $byProject[$s.project] = [System.Collections.ArrayList]::new() }
+        [void]$byProject[$s.project].Add($s)
+    }
+
     $pairs = @()
+    $projPairs = @()
     foreach ($tab in $cleanTabs) {
         $tokens = @([regex]::Matches($tab.ToLower(), '[a-z0-9]{4,}') | ForEach-Object { $_.Value })
         if ($tokens.Count -eq 0) { continue }
-        foreach ($s in $sessions) {
-            if ($s.tier -ne 'open' -and $s.tier -ne 'maybe') { continue }
-            $hay = $haystacks[$s.sessionId]
+        foreach ($s in $openSessions) {
+            # Single-word renames only match high-signal metadata (title/summary/project/
+            # slug). First prompts are often shared boilerplate -- "matter" appears in
+            # every handoff template -- and one generic word hitting boilerplate used to
+            # pin the tab name on an unrelated session.
+            $hay = if ($tokens.Count -ge 2) { $haystacks[$s.sessionId] } else { $strongHaystacks[$s.sessionId] }
             if (-not $hay) { continue }
             $hits = 0
             foreach ($tok in $tokens) {
@@ -540,15 +593,44 @@ if (-not $historyMode -and $cleanTabs.Count -gt 0) {
                 $pairs += [PSCustomObject]@{ tab = $tab; s = $s; score = $tokens.Count }
             }
         }
+        # Rescue pass: typo'd renames ("defromer_New_ones", "Raytracer_A_Vulkan") never
+        # pass the all-words test. If exactly one word clearly names exactly one project
+        # (substring either way, or edit distance <= 2) and that project has exactly one
+        # open session, the pairing is unambiguous. Anything less stays unlabeled.
+        $projHit = $null; $ambiguous = $false
+        foreach ($proj in $byProject.Keys) {
+            $pn = $proj.ToLower() -replace '[^a-z0-9]', ''
+            if ($pn.Length -lt 4) { continue }
+            foreach ($tok in $tokens) {
+                $near = $pn.Contains($tok) -or $tok.Contains($pn)
+                if (-not $near -and $tok.Length -ge 5 -and [Math]::Abs($tok.Length - $pn.Length) -le 3) {
+                    $near = (Get-EditDistance $tok $pn) -le 2
+                }
+                if ($near) {
+                    if ($projHit -and $projHit -ne $proj) { $ambiguous = $true }
+                    $projHit = $proj
+                    break
+                }
+            }
+        }
+        if ($projHit -and -not $ambiguous -and $byProject[$projHit].Count -eq 1) {
+            $projPairs += [PSCustomObject]@{ tab = $tab; s = $byProject[$projHit][0]; score = 0 }
+        }
     }
-    # Greedy unique assignment: most specific (most words) first
+    # Greedy unique assignment: exact matches (most words first), then project rescues
     $usedTabs = @{}
-    foreach ($pair in @($pairs | Sort-Object score -Descending)) {
+    foreach ($pair in @(@($pairs | Sort-Object score -Descending) + $projPairs)) {
         if ($usedTabs.ContainsKey($pair.tab) -or $pair.s.tabLabel) { continue }
         $pair.s.tabLabel = $pair.tab
         $usedTabs[$pair.tab] = $true
-        # Restored tabs should come back with the user's own name
-        $pair.s.tabName = Get-SafeTabName "$($pair.s.project)`: $($pair.tab)"
+        # Restored tabs should come back with the user's own name -- and without
+        # stacking a second "project:" prefix when the tab already carries one
+        # from a previous restore ("SIMANGO: SIMANGO: ...")
+        if ($pair.tab.ToLower().StartsWith("$($pair.s.project.ToLower()):")) {
+            $pair.s.tabName = Get-SafeTabName $pair.tab
+        } else {
+            $pair.s.tabName = Get-SafeTabName "$($pair.s.project)`: $($pair.tab)"
+        }
     }
 }
 
