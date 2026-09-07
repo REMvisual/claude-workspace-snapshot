@@ -646,18 +646,20 @@ function Get-SnapshotHistoryIds {
     return $out
 }
 
-# Live always wins. History is ranked (snapshot-backed, then substantial, then
-# newest) and capped -- reporting the remainder rather than dropping it silently.
+# Live always wins. History is ranked (snapshot-backed first, then newest) and
+# capped -- reporting the remainder rather than dropping it silently.
 function Merge-SessionSets {
     param($Live, $History, [int]$Cap = 25)
     $seen = @{}
     foreach ($s in @($Live)) { $seen[$s.sessionId] = $true }
+    # Two ranking dimensions only: snapshot-source (a record of a tab that WAS open
+    # beats a file-activity guess), then recency. There is deliberately no message-count
+    # dimension: every producer that feeds $History -- Get-SnapshotHistoryIds and the
+    # Claude and Codex file-activity projections -- builds its rows from a filename and
+    # a LastWriteTime, and counting messages would mean opening every transcript, which
+    # this path exists to avoid.
     $ranked = @(@($History) | Sort-Object `
         @{ Expression = { if ($_.source -eq 'snapshot') { 0 } else { 1 } } },
-        # A snapshot row has no messageCount and defaults to 99 here, so it is always
-        # scored "substantial" -- deliberate: it is a known-was-open tab, not an
-        # inferred one, so the trivial-session demotion below never applies to it.
-        @{ Expression = { $mc = 99; if ($null -ne $_.messageCount) { $mc = [int]$_.messageCount }; if ($mc -le 2) { 1 } else { 0 } } },
         @{ Expression = { $d = [datetime]::MinValue; try { $d = [datetime]::Parse($_.modified) } catch {}; $d }; Descending = $true })
     $out = [System.Collections.ArrayList]::new()
     foreach ($h in $ranked) {
@@ -671,6 +673,118 @@ function Merge-SessionSets {
         $out = [System.Collections.ArrayList]@($out[0..($Cap - 1)])
     }
     return [pscustomobject]@{ sessions = @($out); truncated = $truncated }
+}
+
+# --- Best-effort: label sessions with the real terminal tab names ---
+# Tab titles (often manual renames) live only in the terminal -- match their words
+# against session metadata. Conservative: EVERY word of the tab name must appear,
+# one tab per session, so labels are never wild guesses (unmatched tabs stay unlabeled).
+#
+# Extracted verbatim from the main flow so it can be tested: this is the ONLY place
+# tabName is mutated, and workspace-restore.ps1 titles a restored tab from tabName
+# alone (never summary). $Sessions rows are PSCustomObjects and are mutated in place.
+# Returns the CLEANED tab list, which the summary banner further down prints.
+function Set-TabLabels {
+    param($Sessions, $Tabs, $Haystacks, $StrongHaystacks)
+    # Clean the tab list: strip spinner glyphs, drop plain-shell tabs (path-like titles)
+    $cleanTabs = @()
+    foreach ($t in $Tabs) {
+        $tt = ($t -replace '[^\x20-\x7E]', '').Trim()
+        if (-not $tt -or $tt -match '[\\/]' -or $tt -match '^[A-Za-z]:') { continue }
+        $cleanTabs += $tt
+    }
+
+    if ($cleanTabs.Count -gt 0) {
+        $openSessions = @($Sessions | Where-Object { $_.tier -in @('open', 'maybe') })
+        $byProject = @{}
+        foreach ($s in $openSessions) {
+            if (-not $byProject.ContainsKey($s.project)) { $byProject[$s.project] = [System.Collections.ArrayList]::new() }
+            [void]$byProject[$s.project].Add($s)
+        }
+
+        $pairs = @()
+        $projPairs = @()
+        foreach ($tab in $cleanTabs) {
+            $tokens = @([regex]::Matches($tab.ToLower(), '[a-z0-9]{4,}') | ForEach-Object { $_.Value })
+            if ($tokens.Count -eq 0) { continue }
+            foreach ($s in $openSessions) {
+                # Single-word renames only match high-signal metadata (title/summary/project/
+                # slug). First prompts are often shared boilerplate -- "matter" appears in
+                # every handoff template -- and one generic word hitting boilerplate used to
+                # pin the tab name on an unrelated session.
+                $hay = if ($tokens.Count -ge 2) { $Haystacks[$s.sessionId] } else { $StrongHaystacks[$s.sessionId] }
+                if (-not $hay) { continue }
+                $hits = 0
+                foreach ($tok in $tokens) {
+                    $found = $hay.Contains($tok)
+                    if (-not $found) {
+                        # singular form ("trees" should match "SpeedTree")
+                        $t2 = $tok.TrimEnd('s')
+                        if ($t2.Length -ge 4 -and $hay.Contains($t2)) { $found = $true }
+                    }
+                    if (-not $found -and $tok.Length -ge 8) {
+                        # concatenated rename ("charcterworkflow" = "charcter" + "workflow")
+                        for ($cut = 4; $cut -le ($tok.Length - 4); $cut++) {
+                            if ($hay.Contains($tok.Substring(0, $cut)) -and $hay.Contains($tok.Substring($cut))) { $found = $true; break }
+                        }
+                    }
+                    if ($found) { $hits++ }
+                }
+                if ($hits -eq $tokens.Count) {
+                    $pairs += [PSCustomObject]@{ tab = $tab; s = $s; score = $tokens.Count }
+                }
+            }
+            # Rescue pass: typo'd renames ("defromer_New_ones", "Raytracer_A_Vulkan") never
+            # pass the all-words test. If exactly one word clearly names exactly one project
+            # (substring either way, or edit distance <= 2) and that project has exactly one
+            # open session, the pairing is unambiguous. Anything less stays unlabeled.
+            $projHit = $null; $ambiguous = $false
+            foreach ($proj in $byProject.Keys) {
+                $pn = $proj.ToLower() -replace '[^a-z0-9]', ''
+                if ($pn.Length -lt 4) { continue }
+                foreach ($tok in $tokens) {
+                    $near = $pn.Contains($tok) -or $tok.Contains($pn)
+                    if (-not $near -and $tok.Length -ge 5 -and [Math]::Abs($tok.Length - $pn.Length) -le 3) {
+                        $near = (Get-EditDistance $tok $pn) -le 2
+                    }
+                    if ($near) {
+                        if ($projHit -and $projHit -ne $proj) { $ambiguous = $true }
+                        $projHit = $proj
+                        break
+                    }
+                }
+            }
+            if ($projHit -and -not $ambiguous -and $byProject[$projHit].Count -eq 1) {
+                $projPairs += [PSCustomObject]@{ tab = $tab; s = $byProject[$projHit][0]; score = 0 }
+            }
+        }
+        # Greedy unique assignment: exact matches (most words first), then project rescues
+        $usedTabs = @{}
+        foreach ($pair in @(@($pairs | Sort-Object score -Descending) + $projPairs)) {
+            if ($usedTabs.ContainsKey($pair.tab) -or $pair.s.tabLabel) { continue }
+            $pair.s.tabLabel = $pair.tab
+            $usedTabs[$pair.tab] = $true
+            # Restored tabs should come back with the user's own name -- and without
+            # stacking a second "project:" prefix when the tab already carries one
+            # from a previous restore ("SIMANGO: SIMANGO: ...")
+            #
+            # Degenerate case: the tab is named after nothing but its project ("VTWO").
+            # Adopting it would collapse tabName to "VTWO: VTWO" and throw away the only
+            # description this session has -- and workspace-restore.ps1 titles the restored
+            # tab from tabName alone, never summary, so that loss is permanent. Keep the
+            # label for display, keep the descriptive tabName for the round trip.
+            $tabNorm = $pair.tab.ToLower() -replace '[^a-z0-9]', ''
+            $projNorm = $pair.s.project.ToLower() -replace '[^a-z0-9]', ''
+            if ($tabNorm -eq $projNorm) {
+                # tabLabel is already set above; leave tabName as built from the summary.
+            } elseif ($pair.tab.ToLower().StartsWith("$($pair.s.project.ToLower()):")) {
+                $pair.s.tabName = Get-SafeTabName $pair.tab
+            } else {
+                $pair.s.tabName = Get-SafeTabName "$($pair.s.project)`: $($pair.tab)"
+            }
+        }
+    }
+    return $cleanTabs
 }
 
 # Test seam: dot-source with WSS_LOAD_ONLY=1 to get the functions without running the tool.
@@ -1112,108 +1226,7 @@ $tierOrder = @{ open = 0; maybe = 1; recent = 2; background = 3; history = 4 }
 $sessions = @($sessions | Sort-Object @{Expression={$tierOrder[$_.tier]}}, @{Expression={$_.group}}, @{Expression={[DateTime]::Parse($_.modified)}; Descending=$true})
 
 # --- Best-effort: label sessions with the real terminal tab names ---
-# Tab titles (often manual renames) live only in the terminal -- match their words
-# against session metadata. Conservative: EVERY word of the tab name must appear,
-# one tab per session, so labels are never wild guesses (unmatched tabs stay unlabeled).
-
-# Clean the tab list: strip spinner glyphs, drop plain-shell tabs (path-like titles)
-$cleanTabs = @()
-foreach ($t in $openTabTitles) {
-    $tt = ($t -replace '[^\x20-\x7E]', '').Trim()
-    if (-not $tt -or $tt -match '[\\/]' -or $tt -match '^[A-Za-z]:') { continue }
-    $cleanTabs += $tt
-}
-
-if ($cleanTabs.Count -gt 0) {
-    $openSessions = @($sessions | Where-Object { $_.tier -in @('open', 'maybe') })
-    $byProject = @{}
-    foreach ($s in $openSessions) {
-        if (-not $byProject.ContainsKey($s.project)) { $byProject[$s.project] = [System.Collections.ArrayList]::new() }
-        [void]$byProject[$s.project].Add($s)
-    }
-
-    $pairs = @()
-    $projPairs = @()
-    foreach ($tab in $cleanTabs) {
-        $tokens = @([regex]::Matches($tab.ToLower(), '[a-z0-9]{4,}') | ForEach-Object { $_.Value })
-        if ($tokens.Count -eq 0) { continue }
-        foreach ($s in $openSessions) {
-            # Single-word renames only match high-signal metadata (title/summary/project/
-            # slug). First prompts are often shared boilerplate -- "matter" appears in
-            # every handoff template -- and one generic word hitting boilerplate used to
-            # pin the tab name on an unrelated session.
-            $hay = if ($tokens.Count -ge 2) { $haystacks[$s.sessionId] } else { $strongHaystacks[$s.sessionId] }
-            if (-not $hay) { continue }
-            $hits = 0
-            foreach ($tok in $tokens) {
-                $found = $hay.Contains($tok)
-                if (-not $found) {
-                    # singular form ("trees" should match "SpeedTree")
-                    $t2 = $tok.TrimEnd('s')
-                    if ($t2.Length -ge 4 -and $hay.Contains($t2)) { $found = $true }
-                }
-                if (-not $found -and $tok.Length -ge 8) {
-                    # concatenated rename ("charcterworkflow" = "charcter" + "workflow")
-                    for ($cut = 4; $cut -le ($tok.Length - 4); $cut++) {
-                        if ($hay.Contains($tok.Substring(0, $cut)) -and $hay.Contains($tok.Substring($cut))) { $found = $true; break }
-                    }
-                }
-                if ($found) { $hits++ }
-            }
-            if ($hits -eq $tokens.Count) {
-                $pairs += [PSCustomObject]@{ tab = $tab; s = $s; score = $tokens.Count }
-            }
-        }
-        # Rescue pass: typo'd renames ("defromer_New_ones", "Raytracer_A_Vulkan") never
-        # pass the all-words test. If exactly one word clearly names exactly one project
-        # (substring either way, or edit distance <= 2) and that project has exactly one
-        # open session, the pairing is unambiguous. Anything less stays unlabeled.
-        $projHit = $null; $ambiguous = $false
-        foreach ($proj in $byProject.Keys) {
-            $pn = $proj.ToLower() -replace '[^a-z0-9]', ''
-            if ($pn.Length -lt 4) { continue }
-            foreach ($tok in $tokens) {
-                $near = $pn.Contains($tok) -or $tok.Contains($pn)
-                if (-not $near -and $tok.Length -ge 5 -and [Math]::Abs($tok.Length - $pn.Length) -le 3) {
-                    $near = (Get-EditDistance $tok $pn) -le 2
-                }
-                if ($near) {
-                    if ($projHit -and $projHit -ne $proj) { $ambiguous = $true }
-                    $projHit = $proj
-                    break
-                }
-            }
-        }
-        if ($projHit -and -not $ambiguous -and $byProject[$projHit].Count -eq 1) {
-            $projPairs += [PSCustomObject]@{ tab = $tab; s = $byProject[$projHit][0]; score = 0 }
-        }
-    }
-    # Greedy unique assignment: exact matches (most words first), then project rescues
-    $usedTabs = @{}
-    foreach ($pair in @(@($pairs | Sort-Object score -Descending) + $projPairs)) {
-        if ($usedTabs.ContainsKey($pair.tab) -or $pair.s.tabLabel) { continue }
-        $pair.s.tabLabel = $pair.tab
-        $usedTabs[$pair.tab] = $true
-        # Restored tabs should come back with the user's own name -- and without
-        # stacking a second "project:" prefix when the tab already carries one
-        # from a previous restore ("SIMANGO: SIMANGO: ...")
-        #
-        # Degenerate case: the tab is named after nothing but its project ("VTWO").
-        # Adopting it would collapse tabName to "VTWO: VTWO" and throw away the only
-        # description this session has -- and workspace-restore.ps1 titles the restored
-        # tab from tabName alone, never summary, so that loss is permanent. Keep the
-        # label for display, keep the descriptive tabName for the round trip.
-        $tabNorm = $pair.tab.ToLower() -replace '[^a-z0-9]', ''
-        $projNorm = $pair.s.project.ToLower() -replace '[^a-z0-9]', ''
-        if ($tabNorm -eq $projNorm) {
-            # tabLabel is already set above; leave tabName as built from the summary.
-        } elseif ($pair.tab.ToLower().StartsWith("$($pair.s.project.ToLower()):")) {
-            $pair.s.tabName = Get-SafeTabName $pair.tab
-        } else {
-            $pair.s.tabName = Get-SafeTabName "$($pair.s.project)`: $($pair.tab)"
-        }
-    }
-}
+$cleanTabs = @(Set-TabLabels -Sessions $sessions -Tabs $openTabTitles -Haystacks $haystacks -StrongHaystacks $strongHaystacks)
 
 if ($sessions.Count -eq 0) {
     Write-Host ""

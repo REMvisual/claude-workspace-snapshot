@@ -3,9 +3,11 @@ $env:WSS_LOAD_ONLY = '1'
 . (Join-Path $script:repoRoot 'scripts\workspace-snapshot.ps1')
 Remove-Item Env:\WSS_LOAD_ONLY -ErrorAction SilentlyContinue
 
+# Mirrors what the history producers actually emit: an id, a source and a timestamp.
+# Nothing in the tool ever populates a message count, so the helper must not either.
 function New-Rec {
-    param($Id, $Source = 'file', $Modified = '2026-09-06T08:00:00', $Msgs = 10)
-    [pscustomobject]@{ sessionId = $Id; source = $Source; modified = $Modified; messageCount = $Msgs }
+    param($Id, $Source = 'file', $Modified = '2026-09-06T08:00:00')
+    [pscustomobject]@{ sessionId = $Id; source = $Source; modified = $Modified }
 }
 
 It 'drops history rows that are already live' {
@@ -24,12 +26,6 @@ It 'ranks snapshot-backed rows above activity-only rows' {
             (New-Rec 'eeeeeeee-0000-0000-0000-000000000005' 'snapshot' '2026-09-06T07:00:00')
     $r = Merge-SessionSets -Live @() -History $hist -Cap 25
     Assert-Equal 'eeeeeeee-0000-0000-0000-000000000005' $r.sessions[0].sessionId
-}
-It 'ranks trivial sessions last' {
-    $hist = @(New-Rec 'ffffffff-0000-0000-0000-000000000006' 'file' '2026-09-06T09:00:00' 1),
-            (New-Rec '11111111-0000-0000-0000-000000000007' 'file' '2026-09-06T08:00:00' 40)
-    $r = Merge-SessionSets -Live @() -History $hist -Cap 25
-    Assert-Equal '11111111-0000-0000-0000-000000000007' $r.sessions[0].sessionId
 }
 It 'caps history rows and reports the remainder' {
     $hist = @(1..30 | ForEach-Object { New-Rec ("22222222-0000-0000-0000-{0:D12}" -f $_) })
