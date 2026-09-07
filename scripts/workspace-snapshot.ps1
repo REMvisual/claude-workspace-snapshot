@@ -13,6 +13,7 @@
 #        workspace-snapshot.bat --auto               (non-interactive: save everything detected)
 #        workspace-snapshot.bat --auto --open-only   (non-interactive: save only open/likely-open tabs)
 #        workspace-snapshot.bat --out <file>         (write snapshot somewhere other than workspace.json)
+#        workspace-snapshot.bat --agent codex        (claude | codex | all -- which agent's sessions to capture)
 #
 # The previous workspace.json is backed up to workspace-backups\ (newest 5 kept)
 # before every save, and the new file is written atomically (temp + rename).
@@ -21,12 +22,13 @@ param(
     [int]$Minutes = 30,
     [switch]$Auto,
     [switch]$OpenOnly,
-    [string]$OutFile
+    [string]$OutFile,
+    [string]$Agent = 'all'
 )
 
 function Show-SnapshotUsage {
     Write-Host ""
-    Write-Host "  Usage: workspace-snapshot.bat [minutes] [--auto] [--open-only] [--out <file>]" -ForegroundColor Yellow
+    Write-Host "  Usage: workspace-snapshot.bat [minutes] [--auto] [--open-only] [--out <file>] [--agent claude|codex|all]" -ForegroundColor Yellow
     Write-Host ""
 }
 
@@ -39,6 +41,7 @@ for ($ai = 0; $ai -lt $args.Count; $ai++) {
     elseif ($a -match '^--?auto$') { $Auto = $true }
     elseif ($a -match '^--?open-?only$') { $OpenOnly = $true }
     elseif ($a -match '^--?out(-?file)?$' -and $ai + 1 -lt $args.Count) { $OutFile = "$($args[$ai + 1])"; $ai++ }
+    elseif ($a -match '^--?agent$' -and $ai + 1 -lt $args.Count) { $Agent = "$($args[$ai + 1])"; $ai++ }
     else { $badArgs += $a }
 }
 if ($badArgs.Count -gt 0) {
@@ -48,6 +51,16 @@ if ($badArgs.Count -gt 0) {
     exit 1
 }
 if ($Minutes -lt 1) { $Minutes = 30 }
+
+# Allowlisted -- $Agent selects code paths only, and is never interpolated into a
+# command line or a path.
+$Agent = "$Agent".ToLower()
+if ($Agent -notin @('claude', 'codex', 'all')) {
+    Write-Host ""
+    Write-Host "  --agent must be claude, codex or all (got '$Agent')" -ForegroundColor Red
+    Show-SnapshotUsage
+    exit 1
+}
 
 $claudeDir = Join-Path $env:USERPROFILE '.claude'
 $projectsDir = Join-Path $claudeDir 'projects'
@@ -335,6 +348,49 @@ function Get-CodexHeldLockIds {
     return ,$ids
 }
 
+# Reads another process's current working directory out of its PEB (read-only, same
+# user). Both the Claude bare-tab matcher (Method C) and the Codex pass need it, so it
+# lives here as a helper instead of inside either one -- compiled at most once per run,
+# and only on x64 where the PEB offsets below are correct. Callers keep using the
+# ('WsSnapProcCwd' -as [type]) guard, which stays $null when compilation is impossible.
+function Initialize-ProcCwdReader {
+    if ('WsSnapProcCwd' -as [type]) { return }
+    if (-not [Environment]::Is64BitProcess) { return }
+    try {
+        Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class WsSnapProcCwd {
+    [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("ntdll.dll")] static extern int NtQueryInformationProcess(IntPtr h, int infoClass, ref PBI info, int len, out int retLen);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool ReadProcessMemory(IntPtr h, IntPtr addr, byte[] buf, int size, out IntPtr read);
+    [StructLayout(LayoutKind.Sequential)] struct PBI { public IntPtr ExitStatus; public IntPtr PebBaseAddress; public IntPtr AffinityMask; public IntPtr BasePriority; public IntPtr UniqueProcessId; public IntPtr InheritedFromUniqueProcessId; }
+    public static string Get(uint pid) {
+        IntPtr h = OpenProcess(0x0410, false, pid); // PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
+        if (h == IntPtr.Zero) return null;
+        try {
+            PBI pbi = new PBI(); int rl;
+            if (NtQueryInformationProcess(h, 0, ref pbi, Marshal.SizeOf(typeof(PBI)), out rl) != 0) return null;
+            byte[] ptrBuf = new byte[8]; IntPtr rd;
+            if (!ReadProcessMemory(h, pbi.PebBaseAddress + 0x20, ptrBuf, 8, out rd)) return null;   // PEB+0x20 = ProcessParameters (x64)
+            IntPtr pp = (IntPtr)BitConverter.ToInt64(ptrBuf, 0);
+            byte[] us = new byte[16];
+            if (!ReadProcessMemory(h, pp + 0x38, us, 16, out rd)) return null;                      // +0x38 = CurrentDirectory.DosPath (UNICODE_STRING)
+            ushort len = BitConverter.ToUInt16(us, 0);
+            IntPtr strPtr = (IntPtr)BitConverter.ToInt64(us, 8);
+            if (len == 0 || strPtr == IntPtr.Zero) return null;
+            byte[] str = new byte[len];
+            if (!ReadProcessMemory(h, strPtr, str, len, out rd)) return null;
+            return Encoding.Unicode.GetString(str);
+        } finally { CloseHandle(h); }
+    }
+}
+'@
+    } catch {}
+}
+
 # Test seam: dot-source with WSS_LOAD_ONLY=1 to get the functions without running the tool.
 if ($env:WSS_LOAD_ONLY -eq '1') { return }
 
@@ -367,118 +423,88 @@ $confirmedBg   = @{}   # sessionId -> $true : uuid confirmed by a process NOT in
 $bareOpenCount = 0     # interactive claude.exe tabs whose session id is unknowable
 $bareTabProcs  = [System.Collections.ArrayList]::new()   # the bare-tab processes themselves (for Method C)
 
-# Method A: claude.exe processes — extract uuid from --session-id / --resume
-foreach ($p in $allProcs.Values) {
-    if ($p.Name -ne 'claude.exe' -or -not $p.CommandLine) { continue }
-    if ($p.CommandLine -match 'daemon run|--bg-pty-host') { continue }   # background infra
-    $sid = $null
-    if ($p.CommandLine -match "--session-id\s+($uuidRe)") { $sid = $Matches[1] }
-    elseif ($p.CommandLine -match "--resume\s+($uuidRe)") { $sid = $Matches[1] }
-    $inTab = Test-UnderWindowsTerminal ([uint32]$p.ProcessId)
-    if ($sid) {
-        if ($inTab) { $confirmedOpen[$sid] = $true } else { $confirmedBg[$sid] = $true }
-    } elseif ($inTab) {
-        $bareOpenCount++
-        [void]$bareTabProcs.Add($p)
-    }
-}
-
-# Method H: happy-coder wrapped sessions — running happy node processes log their
-# Claude session uuid to ~/.happy/logs/*-pid-<pid>.log (last uuid in the log wins)
-$happyLogsDir = Join-Path $env:USERPROFILE '.happy\logs'
-if (Test-Path $happyLogsDir) {
+# Methods A/H/C are Claude-specific: they read claude.exe command lines, happy-coder
+# logs and ~/.claude/projects. --agent codex skips them wholesale.
+if ($Agent -in @('claude', 'all')) {
+    # Method A: claude.exe processes — extract uuid from --session-id / --resume
     foreach ($p in $allProcs.Values) {
-        if ($p.Name -ne 'node.exe' -or -not $p.CommandLine) { continue }
-        if ($p.CommandLine -notmatch 'happy-coder') { continue }
-        $log = Get-ChildItem -Path $happyLogsDir -Filter "*-pid-$($p.ProcessId).log" -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if (-not $log) { continue }
+        if ($p.Name -ne 'claude.exe' -or -not $p.CommandLine) { continue }
+        if ($p.CommandLine -match 'daemon run|--bg-pty-host') { continue }   # background infra
         $sid = $null
-        Select-String -Path $log.FullName -Pattern "`"sessionId`":\s*`"($uuidRe)`"" -ErrorAction SilentlyContinue |
-            ForEach-Object { $sid = $_.Matches[0].Groups[1].Value }
-        if (-not $sid) { continue }
-        if (Test-UnderWindowsTerminal ([uint32]$p.ProcessId)) {
-            $confirmedOpen[$sid] = $true
-        } elseif (-not $confirmedOpen.ContainsKey($sid)) {
-            $confirmedBg[$sid] = $true
+        if ($p.CommandLine -match "--session-id\s+($uuidRe)") { $sid = $Matches[1] }
+        elseif ($p.CommandLine -match "--resume\s+($uuidRe)") { $sid = $Matches[1] }
+        $inTab = Test-UnderWindowsTerminal ([uint32]$p.ProcessId)
+        if ($sid) {
+            if ($inTab) { $confirmedOpen[$sid] = $true } else { $confirmedBg[$sid] = $true }
+        } elseif ($inTab) {
+            $bareOpenCount++
+            [void]$bareTabProcs.Add($p)
         }
     }
-}
 
-# Method C: bare-tab cwd matching — a bare claude.exe (no uuid in its cmdline) still
-# betrays its session: read the process's working directory out of its PEB (read-only,
-# same-user), map it to the matching ~/.claude/projects dir, and take the newest .jsonl
-# CREATED since that process launched (a bare claude.exe creates its session file within
-# seconds of starting; /clear successors are created later in its lifetime). Newest tabs
-# claim files first so two tabs in the same project don't grab each other's session.
-# Unmatched tabs stay in $bareOpenCount and fall back to the recency promotion below.
-if ($bareTabProcs.Count -gt 0 -and [Environment]::Is64BitProcess) {
-    if (-not ('WsSnapProcCwd' -as [type])) {
-        try {
-            Add-Type -ErrorAction Stop -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-public static class WsSnapProcCwd {
-    [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
-    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
-    [DllImport("ntdll.dll")] static extern int NtQueryInformationProcess(IntPtr h, int infoClass, ref PBI info, int len, out int retLen);
-    [DllImport("kernel32.dll", SetLastError=true)] static extern bool ReadProcessMemory(IntPtr h, IntPtr addr, byte[] buf, int size, out IntPtr read);
-    [StructLayout(LayoutKind.Sequential)] struct PBI { public IntPtr ExitStatus; public IntPtr PebBaseAddress; public IntPtr AffinityMask; public IntPtr BasePriority; public IntPtr UniqueProcessId; public IntPtr InheritedFromUniqueProcessId; }
-    public static string Get(uint pid) {
-        IntPtr h = OpenProcess(0x0410, false, pid); // PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
-        if (h == IntPtr.Zero) return null;
-        try {
-            PBI pbi = new PBI(); int rl;
-            if (NtQueryInformationProcess(h, 0, ref pbi, Marshal.SizeOf(typeof(PBI)), out rl) != 0) return null;
-            byte[] ptrBuf = new byte[8]; IntPtr rd;
-            if (!ReadProcessMemory(h, pbi.PebBaseAddress + 0x20, ptrBuf, 8, out rd)) return null;   // PEB+0x20 = ProcessParameters (x64)
-            IntPtr pp = (IntPtr)BitConverter.ToInt64(ptrBuf, 0);
-            byte[] us = new byte[16];
-            if (!ReadProcessMemory(h, pp + 0x38, us, 16, out rd)) return null;                      // +0x38 = CurrentDirectory.DosPath (UNICODE_STRING)
-            ushort len = BitConverter.ToUInt16(us, 0);
-            IntPtr strPtr = (IntPtr)BitConverter.ToInt64(us, 8);
-            if (len == 0 || strPtr == IntPtr.Zero) return null;
-            byte[] str = new byte[len];
-            if (!ReadProcessMemory(h, strPtr, str, len, out rd)) return null;
-            return Encoding.Unicode.GetString(str);
-        } finally { CloseHandle(h); }
+    # Method H: happy-coder wrapped sessions — running happy node processes log their
+    # Claude session uuid to ~/.happy/logs/*-pid-<pid>.log (last uuid in the log wins)
+    $happyLogsDir = Join-Path $env:USERPROFILE '.happy\logs'
+    if (Test-Path $happyLogsDir) {
+        foreach ($p in $allProcs.Values) {
+            if ($p.Name -ne 'node.exe' -or -not $p.CommandLine) { continue }
+            if ($p.CommandLine -notmatch 'happy-coder') { continue }
+            $log = Get-ChildItem -Path $happyLogsDir -Filter "*-pid-$($p.ProcessId).log" -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if (-not $log) { continue }
+            $sid = $null
+            Select-String -Path $log.FullName -Pattern "`"sessionId`":\s*`"($uuidRe)`"" -ErrorAction SilentlyContinue |
+                ForEach-Object { $sid = $_.Matches[0].Groups[1].Value }
+            if (-not $sid) { continue }
+            if (Test-UnderWindowsTerminal ([uint32]$p.ProcessId)) {
+                $confirmedOpen[$sid] = $true
+            } elseif (-not $confirmedOpen.ContainsKey($sid)) {
+                $confirmedBg[$sid] = $true
+            }
+        }
     }
-}
-'@
-        } catch {}
-    }
-    if ('WsSnapProcCwd' -as [type]) {
-        $claimedIds = @{}
-        foreach ($k in $confirmedOpen.Keys) { $claimedIds[$k] = $true }
-        foreach ($k in $confirmedBg.Keys)   { $claimedIds[$k] = $true }
-        foreach ($p in @($bareTabProcs | Sort-Object CreationDate -Descending)) {
-            $procCwd = $null
-            try { $procCwd = [WsSnapProcCwd]::Get([uint32]$p.ProcessId) } catch {}
-            if (-not $procCwd) { continue }
-            # Claude Code encodes a project dir by replacing every non-alphanumeric char with '-'
-            $projDirName = $procCwd.TrimEnd('\') -replace '[^A-Za-z0-9]', '-'
-            $projDirKey = (Join-Path $projectsDir $projDirName).ToLower()
-            if (-not $jsonlByDir.ContainsKey($projDirKey)) { continue }
-            $startSlack = $p.CreationDate.AddSeconds(-60)
-            $candidates = @($jsonlByDir[$projDirKey] |
-                Where-Object {
-                    $_.BaseName -match "^$uuidRe$" -and
-                    -not $claimedIds.ContainsKey($_.BaseName) -and
-                    $_.LastWriteTime -ge $startSlack
-                })
-            # Files created before the process belong to OTHER sessions, however fresh
-            # their mtime looks (a tab closed minutes ago, a remote resume of an old
-            # session). Claiming by mtime alone let such a file steal the tab's identity
-            # and pushed the tab's real session out of the list entirely. Fall back to
-            # pure recency only when no created-after file exists (in-app /resume).
-            $ownCreated = @($candidates | Where-Object { $_.CreationTime -ge $startSlack })
-            if ($ownCreated.Count -gt 0) { $candidates = $ownCreated }
-            $match = $candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($match) {
-                $confirmedOpen[$match.BaseName] = $true
-                $claimedIds[$match.BaseName] = $true
-                $bareOpenCount--
+
+    # Method C: bare-tab cwd matching — a bare claude.exe (no uuid in its cmdline) still
+    # betrays its session: read the process's working directory out of its PEB (read-only,
+    # same-user), map it to the matching ~/.claude/projects dir, and take the newest .jsonl
+    # CREATED since that process launched (a bare claude.exe creates its session file within
+    # seconds of starting; /clear successors are created later in its lifetime). Newest tabs
+    # claim files first so two tabs in the same project don't grab each other's session.
+    # Unmatched tabs stay in $bareOpenCount and fall back to the recency promotion below.
+    if ($bareTabProcs.Count -gt 0) {
+        Initialize-ProcCwdReader
+        if ('WsSnapProcCwd' -as [type]) {
+            $claimedIds = @{}
+            foreach ($k in $confirmedOpen.Keys) { $claimedIds[$k] = $true }
+            foreach ($k in $confirmedBg.Keys)   { $claimedIds[$k] = $true }
+            foreach ($p in @($bareTabProcs | Sort-Object CreationDate -Descending)) {
+                $procCwd = $null
+                try { $procCwd = [WsSnapProcCwd]::Get([uint32]$p.ProcessId) } catch {}
+                if (-not $procCwd) { continue }
+                # Claude Code encodes a project dir by replacing every non-alphanumeric char with '-'
+                $projDirName = $procCwd.TrimEnd('\') -replace '[^A-Za-z0-9]', '-'
+                $projDirKey = (Join-Path $projectsDir $projDirName).ToLower()
+                if (-not $jsonlByDir.ContainsKey($projDirKey)) { continue }
+                $startSlack = $p.CreationDate.AddSeconds(-60)
+                $candidates = @($jsonlByDir[$projDirKey] |
+                    Where-Object {
+                        $_.BaseName -match "^$uuidRe$" -and
+                        -not $claimedIds.ContainsKey($_.BaseName) -and
+                        $_.LastWriteTime -ge $startSlack
+                    })
+                # Files created before the process belong to OTHER sessions, however fresh
+                # their mtime looks (a tab closed minutes ago, a remote resume of an old
+                # session). Claiming by mtime alone let such a file steal the tab's identity
+                # and pushed the tab's real session out of the list entirely. Fall back to
+                # pure recency only when no created-after file exists (in-app /resume).
+                $ownCreated = @($candidates | Where-Object { $_.CreationTime -ge $startSlack })
+                if ($ownCreated.Count -gt 0) { $candidates = $ownCreated }
+                $match = $candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                if ($match) {
+                    $confirmedOpen[$match.BaseName] = $true
+                    $claimedIds[$match.BaseName] = $true
+                    $bareOpenCount--
+                }
             }
         }
     }
@@ -501,15 +527,86 @@ try {
     }
 } catch {}
 
-# Method B: .jsonl files modified recently (catches sessions invisible to A/H)
+# $recentCutoff is shared by Method B and the Codex pass -- compute it unconditionally.
 $recentCutoff = (Get-Date).AddMinutes(-$Minutes)
-$recentIds = @($allJsonl |
-    Where-Object { $_.LastWriteTime -gt $recentCutoff -and $_.BaseName -match '^[0-9a-f]{8}-' } |
-    ForEach-Object { $_.BaseName })
+
+# Method B: .jsonl files modified recently (catches sessions invisible to A/H)
+$recentIds = @()
+if ($Agent -in @('claude', 'all')) {
+    $recentIds = @($allJsonl |
+        Where-Object { $_.LastWriteTime -gt $recentCutoff -and $_.BaseName -match '^[0-9a-f]{8}-' } |
+        ForEach-Object { $_.BaseName })
+}
 
 # Combine and deduplicate
 $processIds = @($confirmedOpen.Keys) + @($confirmedBg.Keys)
 $liveIds = @($processIds + $recentIds | Select-Object -Unique)
+
+# --- Codex discovery -------------------------------------------------------
+# Codex keeps one rollout-<ts>-<uuid>.jsonl per thread under ~/.codex/sessions and
+# holds an exclusive lock file per LIVE thread under ~/.codex/thread-writer-locks.
+# codex.exe carries no session id on its command line, so a held lock only proves
+# the session is alive -- to tell an on-screen tab from a background/remote codex we
+# match the session's own cwd against the cwds of the codex.exe processes that sit
+# under a WindowsTerminal.exe.
+$codexRecords = [System.Collections.ArrayList]::new()
+$codexRolloutById = @{}    # sessionId -> rollout FileInfo (every rollout examined, kept or not)
+$codexDir = Join-Path $env:USERPROFILE '.codex'
+if ($Agent -in @('codex', 'all') -and (Test-Path $codexDir)) {
+    $codexSessionsDir = Join-Path $codexDir 'sessions'
+    $heldIds = @{}
+    foreach ($id in (Get-CodexHeldLockIds -LockDir (Join-Path $codexDir 'thread-writer-locks'))) {
+        $heldIds[$id] = $true
+    }
+    $titleMap = Get-CodexTitleMap -IndexPath (Join-Path $codexDir 'session_index.jsonl')
+
+    # cwd -> is that cwd backed by a codex.exe inside a Windows Terminal tab?
+    $codexTabCwds = @{}
+    Initialize-ProcCwdReader
+    foreach ($p in $allProcs.Values) {
+        if ($p.Name -ne 'codex.exe') { continue }
+        if (-not (Test-UnderWindowsTerminal ([uint32]$p.ProcessId))) { continue }
+        $c = $null
+        if ('WsSnapProcCwd' -as [type]) {
+            try { $c = [WsSnapProcCwd]::Get([uint32]$p.ProcessId) } catch {}
+        }
+        if ($c) { $codexTabCwds[$c.TrimEnd('\').ToLower()] = $true }
+    }
+
+    $rollouts = @()
+    if (Test-Path $codexSessionsDir) {
+        $rollouts = @(Get-ChildItem -Path $codexSessionsDir -Filter 'rollout-*.jsonl' -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -gt $recentCutoff -or $heldIds.ContainsKey(($_.BaseName -replace "^.*?($uuidRe)$", '$1')) })
+    }
+
+    foreach ($f in $rollouts) {
+        if ($f.BaseName -notmatch "($uuidRe)$") { continue }
+        $sid = $Matches[1]
+        # Indexed for every rollout we look at, kept or dropped -- history recovery
+        # (Task 7) hydrates its rows from this map and cannot rebuild it.
+        if (-not $codexRolloutById.ContainsKey($sid)) { $codexRolloutById[$sid] = $f }
+        $meta = Get-CodexSessionMeta -Path $f.FullName
+        if (-not $meta) { continue }          # subagent thread or unparsable
+        $tier = 'recent'
+        if ($heldIds.ContainsKey($sid)) {
+            $tier = if ($codexTabCwds.ContainsKey($meta.cwd.TrimEnd('\').ToLower())) { 'open' } else { 'background' }
+        }
+        $title = $null
+        if ($titleMap.ContainsKey($sid)) { $title = $titleMap[$sid].name }
+        $prompt = Get-CodexFirstPrompt -Path $f.FullName
+        if (-not $title) { $title = $prompt }
+        # Never drop a real session for lack of a title: a brand-new thread has no
+        # session_index entry yet and may have nothing but synthetic preamble so far.
+        # A weak row (the project name) beats a missing one.
+        if (-not $title) { $title = Split-Path $meta.cwd -Leaf }
+        if (-not $title) { continue }
+        [void]$codexRecords.Add([pscustomobject]@{
+            sessionId = $sid; agent = 'codex'; cwd = $meta.cwd
+            title = $title; firstPrompt = $prompt
+            modified = $f.LastWriteTime; tier = $tier
+        })
+    }
+}
 
 # --- STEP 1b: History recovery fallback (only when no live sessions) ---
 # Triggered after a reboot/blackout where every Claude session was closed.
@@ -518,11 +615,17 @@ $liveIds = @($processIds + $recentIds | Select-Object -Unique)
 $historyMode = $false
 $historySubtitle = ''
 
-if ($liveIds.Count -eq 0) {
+if ($liveIds.Count -eq 0 -and $codexRecords.Count -eq 0) {
+    $agentLabel = switch ($Agent) { 'claude' { 'Claude' } 'codex' { 'Codex' } default { 'Claude or Codex' } }
     Write-Host ""
-    Write-Host "  No live Claude sessions detected." -ForegroundColor Yellow
+    Write-Host "  No live $agentLabel sessions detected." -ForegroundColor Yellow
     Write-Host "  (checked running processes + files modified in last $Minutes min)" -ForegroundColor DarkGray
     Write-Host ""
+
+    # History recovery still only knows how to read ~/.claude/projects, so it has
+    # nothing to offer a Codex-only run. Bail out rather than prompt for a search
+    # that could only ever return Claude sessions.
+    if ($Agent -eq 'codex') { exit 0 }
 
     if ($Auto) {
         # A scheduled/non-interactive run must never overwrite a good pre-reboot
@@ -722,6 +825,7 @@ foreach ($sid in $liveIds) {
 
     [void]$sessions.Add([PSCustomObject]@{
         sessionId   = $sid
+        agent       = 'claude'
         projectPath = $cwd
         project     = $project
         summary     = $summary
@@ -738,10 +842,48 @@ foreach ($sid in $liveIds) {
     })
 }
 
+# Fold the Codex pass into the same record shape, so tab-title matching, grouping,
+# display and save all stay agent-agnostic from here down. Codex has no equivalent of
+# ai-title/summary/slug/gitBranch, so those stay empty and the thread name (or first
+# real prompt) carries the display.
+foreach ($c in $codexRecords) {
+    $cProject = Split-Path $c.cwd -Leaf
+    $cTabName = Get-SafeTabName ($c.title -replace '<[^>]+>', '')
+    if ($cTabName.Length -gt 40) { $cTabName = $cTabName.Substring(0, 37) + '...' }
+
+    $codexPrompt = ''
+    if ($c.firstPrompt) {
+        $codexPrompt = if ($c.firstPrompt.Length -gt 80) { $c.firstPrompt.Substring(0, 77) + '...' } else { $c.firstPrompt }
+    }
+
+    $haystacks[$c.sessionId] = ("$($c.title) $($c.firstPrompt) $cProject").ToLower() -replace '[^a-z0-9]', ''
+    $strongHaystacks[$c.sessionId] = ("$($c.title) $cProject").ToLower() -replace '[^a-z0-9]', ''
+
+    $cSource = if ($c.tier -eq 'open' -or $c.tier -eq 'background') { 'process' } else { 'file' }
+
+    [void]$sessions.Add([PSCustomObject]@{
+        sessionId   = $c.sessionId
+        agent       = 'codex'
+        projectPath = $c.cwd
+        project     = $cProject
+        summary     = $c.title
+        tabName     = Get-SafeTabName "$cProject`: $cTabName"
+        tabColor    = Get-ProjectColor $cProject
+        firstPrompt = $codexPrompt
+        modified    = $c.modified.ToString('o')
+        gitBranch   = ''
+        slug        = ''
+        group       = $cProject
+        source      = $cSource
+        tier        = $c.tier
+        tabLabel    = ''
+    })
+}
+
 # Promote: we counted bare interactive claude.exe tabs (no uuid in cmdline) — the
 # N most recently active unconfirmed sessions are most likely those open tabs
 if (-not $historyMode -and $bareOpenCount -gt 0) {
-    @($sessions | Where-Object { $_.tier -eq 'recent' } |
+    @($sessions | Where-Object { $_.tier -eq 'recent' -and $_.agent -eq 'claude' } |
         Sort-Object @{Expression={[DateTime]::Parse($_.modified)}; Descending=$true} |
         Select-Object -First $bareOpenCount) |
         ForEach-Object { $_.tier = 'maybe' }
@@ -753,7 +895,7 @@ if ($OpenOnly -and -not $historyMode) {
 }
 
 # Sort by tier (open > maybe > recent > background), then project group, then newest first
-$tierOrder = @{ open = 0; maybe = 1; recent = 2; background = 3 }
+$tierOrder = @{ open = 0; maybe = 1; recent = 2; background = 3; history = 4 }
 $sessions = @($sessions | Sort-Object @{Expression={$tierOrder[$_.tier]}}, @{Expression={$_.group}}, @{Expression={[DateTime]::Parse($_.modified)}; Descending=$true})
 
 # --- Best-effort: label sessions with the real terminal tab names ---
