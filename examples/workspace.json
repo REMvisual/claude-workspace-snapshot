@@ -7,7 +7,8 @@
       "sessions": [
         {
           "sessionId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-          "projectPath": "C:\\Projects\\skywatch",
+          "agent": "claude",
+          "projectPath": "C:\\Users\\Public\\Documents",
           "project": "skywatch",
           "summary": "Add hourly forecast caching to reduce API calls below the free tier limit",
           "tabName": "skywatch: Add hourly forecast caching to reduc...",
@@ -23,7 +24,7 @@
         },
         {
           "sessionId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
-          "projectPath": "C:\\Projects\\skywatch",
+          "projectPath": "C:\\Users\\Public\\Documents",
           "project": "skywatch",
           "summary": "Fix timezone handling in weather alert notifications",
           "tabName": "skywatch: Fix timezone handling in weather aler...",
@@ -36,6 +37,23 @@
           "source": "file",
           "tier": "recent",
           "tabLabel": ""
+        },
+        {
+          "sessionId": "f1a2b3c4-d5e6-4708-9abc-1234567890ab",
+          "agent": "codex",
+          "projectPath": "C:\\Users\\Public\\Documents",
+          "project": "skywatch",
+          "summary": "Draft an OpenAPI schema for the forecast-cache endpoint",
+          "tabName": "skywatch: Draft an OpenAPI schema for the forec...",
+          "tabColor": "#4A9BD9",
+          "firstPrompt": "Draft an OpenAPI schema for the forecast-cache endpoint",
+          "modified": "2026-03-28T14:05:00.0000000-07:00",
+          "gitBranch": "",
+          "slug": "",
+          "group": "skywatch",
+          "source": "process",
+          "tier": "open",
+          "tabLabel": ""
         }
       ]
     },
@@ -45,7 +63,7 @@
       "sessions": [
         {
           "sessionId": "c3d4e5f6-a7b8-9012-cdef-123456789012",
-          "projectPath": "C:\\Projects\\taskflow-api",
+          "projectPath": "C:\\Users\\Public\\Documents",
           "project": "taskflow-api",
           "summary": "Fix race condition in concurrent task assignment",
           "tabName": "taskflow-api: Fix race condition in concurrent ...",
@@ -66,8 +84,8 @@
       "tabColor": "#2ECC71",
       "sessions": [
         {
-          "sessionId": "d4e5f6a7-b890-1234-defg-234567890123",
-          "projectPath": "C:\\Projects\\chatterbox",
+          "sessionId": "d4e5f6a7-b890-1234-9def-234567890123",
+          "projectPath": "C:\\Users\\Public\\Documents",
           "project": "chatterbox",
           "summary": "Add message threading support to the chat API",
           "tabName": "chatterbox: Add message threading support to t...",
@@ -82,8 +100,8 @@
           "tabLabel": ""
         },
         {
-          "sessionId": "e5f6a7b8-9012-3456-efgh-345678901234",
-          "projectPath": "C:\\Projects\\chatterbox",
+          "sessionId": "e5f6a7b8-9012-3456-9efb-345678901234",
+          "projectPath": "C:\\Users\\Public\\Documents",
           "project": "chatterbox",
           "summary": "Implement typing indicators with WebSocket events",
           "tabName": "chatterbox: Implement typing indicators with W...",

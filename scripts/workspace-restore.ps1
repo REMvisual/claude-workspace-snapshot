@@ -125,12 +125,23 @@ if (Test-Path $projectsDir) {
 }
 
 # Codex rollouts are rollout-<ts>-<uuid>.jsonl, so BaseName never equals the id --
-# extract the uuid suffix instead of matching the whole file name.
+# extract the uuid suffix instead of matching the whole file name. Gated on the loaded
+# snapshot actually referencing a Codex row: a recursive scan of ~/.codex/sessions costs
+# nothing for the common all-Claude case if it never runs.
 $existingCodexIds = @{}
-$codexSessionsDir = Join-Path $env:USERPROFILE '.codex\sessions'
-if (Test-Path $codexSessionsDir) {
-    Get-ChildItem -Path $codexSessionsDir -Filter 'rollout-*.jsonl' -Recurse -ErrorAction SilentlyContinue |
-        ForEach-Object { if ($_.BaseName -match "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$") { $existingCodexIds[$Matches[1]] = $true } }
+$snapshotHasCodex = $false
+foreach ($g in $rawGroups) {
+    foreach ($s in @($g.sessions)) {
+        if ($s -and "$($s.agent)".Trim().ToLower() -eq 'codex') { $snapshotHasCodex = $true; break }
+    }
+    if ($snapshotHasCodex) { break }
+}
+if ($snapshotHasCodex) {
+    $codexSessionsDir = Join-Path $env:USERPROFILE '.codex\sessions'
+    if (Test-Path $codexSessionsDir) {
+        Get-ChildItem -Path $codexSessionsDir -Filter 'rollout-*.jsonl' -Recurse -ErrorAction SilentlyContinue |
+            ForEach-Object { if ($_.BaseName -match "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$") { $existingCodexIds[$Matches[1]] = $true } }
+    }
 }
 
 # --- Validate and normalize every entry before anything opens ---
@@ -311,7 +322,7 @@ for ($gi = 0; $gi -lt $groups.Count; $gi++) {
 
 if (@($groups.sessions | Where-Object { $_.missing }).Count -gt 0) {
     Write-Host "  [missing] = session file no longer exists; the tab will still open in the" -ForegroundColor DarkGray
-    Write-Host "  right directory but 'claude --resume' will report the session as gone." -ForegroundColor DarkGray
+    Write-Host "  right directory, but resuming that session will report it as gone." -ForegroundColor DarkGray
     Write-Host ""
 }
 

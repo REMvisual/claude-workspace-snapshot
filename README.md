@@ -10,7 +10,7 @@
 
 ## Why This Exists
 
-You run multiple Claude Code sessions across different projects. You restart your machine. Now every tab is gone. The built-in `claude --resume` command exists, but it needs 36-character UUIDs that you have to dig out of a wall of text. For each session. One at a time.
+You run multiple Claude Code (and now OpenAI Codex CLI) sessions across different projects. You restart your machine. Now every tab is gone. The built-in `claude --resume` / `codex resume` commands exist, but they need session IDs you have to dig out of a wall of text. For each session. One at a time.
 
 This tool fixes that. Two scripts. One saves your workspace, the other brings it back.
 
@@ -62,21 +62,28 @@ Double-click `workspace-snapshot.bat` or run it from terminal:
 ~/.claude/scripts/workspace-snapshot.bat
 ```
 
-It finds your live sessions, groups them by project, and saves everything to `~/.claude/workspace.json`:
+It finds your live sessions -- Claude Code and Codex CLI both, by default -- groups them by project, and saves everything to `~/.claude/workspace.json`:
 
 ```
   WORKSPACE SNAPSHOT (live detection)
-  13 live sessions (8 from processes, 5 from file activity)
+  Open terminal tabs (2): skywatch, taskflow-api
+  4 sessions: 2 open for sure, 2 recent-only
 
+  === OPEN (confirmed by running process) ===
   --- skywatch (#4A9BD9) ---
-  1. Add hourly forecast caching to reduce API calls [P] Mar 28 14:25
-  2. Fix timezone handling in weather alerts           [F] Mar 28 14:10
+  1. cc Add hourly forecast caching to reduce API calls [OPEN] Mar 28 14:25
+  2. cx Draft an OpenAPI schema for the forecast cache  [OPEN] Mar 28 14:22
   --- taskflow-api (#E67E22) ---
-  3. Fix race condition in concurrent task assignment  [P] Mar 28 14:20
-  4. Add WebSocket notifications for task updates      [F] Mar 28 13:45
+  3. cc Fix race condition in concurrent task assignment [OPEN] Mar 28 14:20
 
-  Save all? [Y/n] or enter numbers (e.g. 1,3,5)
+  === RECENT (file activity only -- may be closed) ===
+  --- skywatch (#4A9BD9) ---
+  4. cc Fix timezone handling in weather alerts          [F] Mar 28 14:10
+
+  Save all? [Y/n/o=open only] or enter numbers (e.g. 1,3,5)
 ```
+
+Each row is tagged `cc` (Claude Code) or `cx` (Codex) so a mixed window is easy to read at a glance. Codex liveness is detected the same way Claude's is -- by proof, not by guesswork: a running `codex.exe` holds an exclusive write lock on `~/.codex/thread-writer-locks/<session-id>.lock` for as long as the session is alive, so a stale lock file left behind by a session that already exited is never mistaken for an open one.
 
 ### Restore (after restart)
 
@@ -92,12 +99,12 @@ It rebuilds your Windows Terminal layout -- one window per project, each tab res
   WORKSPACE RESTORE
   Snapshot: 2026-03-28 14:30 (2h ago)
 
-  Window 1: skywatch (#4A9BD9) -- 2 tab(s)
-    1. skywatch: Add hourly forecast caching to reduc...
-    2. skywatch: Fix timezone handling in weather aler...
-  Window 2: taskflow-api (#E67E22) -- 2 tab(s)
-    3. taskflow-api: Fix race condition in concurrent ...
-    4. taskflow-api: Add WebSocket notifications for t...
+  Window 1: skywatch (#4A9BD9) -- 3 tab(s)
+    1. [claude] skywatch: Add hourly forecast caching to reduc...
+    2. [claude] skywatch: Fix timezone handling in weather aler...
+    3. [codex] skywatch: Draft an OpenAPI schema for the forec...
+  Window 2: taskflow-api (#E67E22) -- 1 tab(s)
+    4. [claude] taskflow-api: Fix race condition in concurrent ...
 
   Options:
     Enter    = restore all windows
@@ -108,11 +115,11 @@ It rebuilds your Windows Terminal layout -- one window per project, each tab res
 
 ## How It Works
 
-1. **Detects sessions** -- scans running `claude.exe` processes and recently active session files to find every live session
-2. **Extracts metadata** -- reads the session summary, working directory, and git branch from each session's data
+1. **Detects sessions** -- scans running `claude.exe`/`codex.exe` processes and recently active session files to find every live session, for either or both agents
+2. **Extracts metadata** -- reads the session summary, working directory, and (for Claude) git branch from each session's data
 3. **Groups and colors** -- clusters sessions by project and assigns each project a stable color based on its name
 4. **Saves to JSON** -- writes everything to `~/.claude/workspace.json` (editable if you want to rename tabs or change colors)
-5. **Restores via Windows Terminal** -- builds `wt.exe` commands with the right title, color, directory, and `--resume` flag for each tab
+5. **Restores via Windows Terminal** -- builds `wt.exe` commands with the right title, color, directory, and resume command (`claude --resume <id>` or `codex resume <id>`) for each tab
 
 ## Options
 
@@ -123,10 +130,39 @@ It rebuilds your Windows Terminal layout -- one window per project, each tab res
 | `workspace-snapshot.bat --auto` | Non-interactive: save everything detected (for scheduled tasks) |
 | `workspace-snapshot.bat --auto --open-only` | Non-interactive: save only tabs that are confirmed/likely open |
 | `workspace-snapshot.bat --out <file>` | Write the snapshot to an alternate file (named workspaces) |
+| `workspace-snapshot.bat --agent claude\|codex\|all` | Capture only Claude sessions, only Codex sessions, or both (default `all`) |
+| `workspace-snapshot.bat --history` | Force the pre-shutdown history tier on, even outside the normal 7-day window |
+| `workspace-snapshot.bat --no-history` | Suppress the pre-shutdown history tier entirely |
 | `workspace-restore.bat` | Interactive restore with session/window picker |
 | `workspace-restore.bat --all` | Restore everything without prompting |
 | `workspace-restore.bat --dry-run` | Print the exact `wt` commands without opening anything |
 | `workspace-restore.bat --file <path>` | Restore from an alternate snapshot (e.g. a rotated backup) |
+
+`[minutes]`, `--auto`, `--open-only` and `--out <file>` all still work exactly as before -- `--agent`, `--history` and `--no-history` are additive.
+
+## Codex Support
+
+Codex CLI sessions are captured and restored alongside Claude Code sessions -- same snapshot, same `workspace.json`, same restore run. A few things work differently under the hood because Codex's on-disk layout differs from Claude's:
+
+- **Liveness** is proven by a held file lock, not a command-line argument: `codex.exe` carries no session id on its command line, but a live session holds an exclusive handle on `~/.codex/thread-writer-locks/<session-id>.lock` for as long as it runs. A lock *file* can be left behind after Codex exits; only a lock that is still *held* counts as open. The session's own working directory is then matched against the cwd of a `codex.exe` sitting inside a Windows Terminal tab to tell an on-screen session from a background/remote one.
+- **A brand-new Codex session with no rollout file yet cannot be captured.** Codex only starts writing `~/.codex/sessions/.../rollout-*.jsonl` after the first exchange, and there is nothing to snapshot before that exists -- open a Codex tab and send at least one message before snapshotting if you want it captured.
+- Codex rows have no git-branch or slug equivalent, so those fields are simply empty; the thread's own title (or its first typed prompt, or the project name, in that order) carries the display name instead.
+
+## Snapshot Schema (`workspace.json`)
+
+Every saved session record carries an `agent` field, either `"claude"` or `"codex"`. **A record with no `agent` field at all is treated as `"claude"` and restores exactly as it always has** -- snapshots taken before Codex support was added keep working unmodified; see [examples/workspace.json](examples/workspace.json) for a worked example with both agents in the same window group.
+
+Every session also carries a `tier`, recording how sure the tool is that it was genuinely open:
+
+| Tier | Meaning |
+|------|---------|
+| `open` | Confirmed by a running process sitting inside a terminal tab |
+| `maybe` | An open tab was seen, but the session behind it had to be inferred by recency |
+| `recent` | Only file activity was found -- the tab itself may already be closed |
+| `background` | A live process was found, but not inside a terminal tab (a remote/daemon session) |
+| `history` | Recovered from *before the last shutdown or blackout*, not from anything currently running |
+
+`history` rows only appear when the pre-shutdown sweep runs (on by default within 7 days of the last boot, or forced with `--history`/suppressed with `--no-history`) and are always inferred -- so **`--auto` never saves a `history` row**, even if the sweep finds one. A `history` row whose `source` is `"snapshot"` was read back out of the pre-crash `workspace.json` itself and is shown as `(from snapshot)` -- strong evidence, since it is a record of what was genuinely open, not a guess from file timestamps.
 
 ## Automatic Backups
 
@@ -167,6 +203,7 @@ After snapshotting, edit `~/.claude/workspace.json` directly to:
 - [Windows Terminal](https://aka.ms/terminal) (wt.exe)
 - PowerShell 5.1+ (built into Windows 10+)
 - [Claude Code CLI](https://claude.ai/code) installed and on PATH
+- [OpenAI Codex CLI](https://github.com/openai/codex) installed and on PATH, only if you want Codex sessions captured/restored too -- Claude-only usage needs nothing extra
 
 ## Uninstall
 
