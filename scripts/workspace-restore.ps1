@@ -59,6 +59,20 @@ function Get-SafeTabName {
     return ($n -replace '\s+', ' ').Trim()
 }
 
+# Resume verbs come from this table only -- nothing from workspace.json is ever
+# interpolated into the command line as a program name or flag.
+$script:agentSpecs = @{
+    claude = [pscustomobject]@{ exe = 'claude'; verb = '--resume' }
+    codex  = [pscustomobject]@{ exe = 'codex';  verb = 'resume' }
+}
+function Get-ResumeCommand {
+    param([string]$Agent, [string]$SessionId)
+    $a = "$Agent".Trim().ToLower()
+    if (-not $script:agentSpecs.ContainsKey($a)) { return $null }
+    $spec = $script:agentSpecs[$a]
+    return "$($spec.exe) $($spec.verb) $SessionId"
+}
+
 # Test seam: dot-source with WSS_LOAD_ONLY=1 to get the functions without running the tool.
 if ($env:WSS_LOAD_ONLY -eq '1') { return }
 
@@ -79,12 +93,6 @@ if (-not $wt -and -not $DryRun) {
     Write-Host "  Install it from the Microsoft Store." -ForegroundColor DarkGray
     Write-Host ""
     exit 1
-}
-
-# claude missing means every restored tab would die on launch -- say so once, upfront
-if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
-    Write-Host ""
-    Write-Host "  WARNING: 'claude' was not found on PATH. Tabs will open but resume will fail." -ForegroundColor Yellow
 }
 
 try {
@@ -116,6 +124,15 @@ if (Test-Path $projectsDir) {
         ForEach-Object { $existingIds[$_.BaseName] = $true }
 }
 
+# Codex rollouts are rollout-<ts>-<uuid>.jsonl, so BaseName never equals the id --
+# extract the uuid suffix instead of matching the whole file name.
+$existingCodexIds = @{}
+$codexSessionsDir = Join-Path $env:USERPROFILE '.codex\sessions'
+if (Test-Path $codexSessionsDir) {
+    Get-ChildItem -Path $codexSessionsDir -Filter 'rollout-*.jsonl' -Recurse -ErrorAction SilentlyContinue |
+        ForEach-Object { if ($_.BaseName -match "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$") { $existingCodexIds[$Matches[1]] = $true } }
+}
+
 # --- Validate and normalize every entry before anything opens ---
 $warnings = @()
 $groups = @()
@@ -132,6 +149,15 @@ foreach ($g in $rawGroups) {
             continue
         }
 
+        # No agent field means a pre-Codex snapshot -- treat as claude for backwards
+        # compatibility. Never echo the raw agent value: it comes straight from a
+        # user-editable file and must not reach the console or a command line.
+        $agent = if ($s.agent) { "$($s.agent)".Trim().ToLower() } else { 'claude' }
+        if (-not $script:agentSpecs.ContainsKey($agent)) {
+            $warnings += "Skipped entry in '$gName': unrecognized agent for $sid."
+            continue
+        }
+
         $dir = "$($s.projectPath)"
         if (-not $dir -or -not (Test-Path -LiteralPath $dir)) {
             $warnings += "Project dir missing for '$sid' ($dir) -- tab will open in $env:USERPROFILE."
@@ -145,12 +171,15 @@ foreach ($g in $rawGroups) {
 
         $color = if ("$($s.tabColor)" -match '^#[0-9A-Fa-f]{6}$') { "$($s.tabColor)" } else { $gColor }
 
+        $missing = if ($agent -eq 'codex') { -not $existingCodexIds.ContainsKey($sid) } else { -not $existingIds.ContainsKey($sid) }
+
         [void]$normSessions.Add([PSCustomObject]@{
             sessionId = $sid
+            agent     = $agent
             dir       = $dir
             title     = $title
             color     = $color
-            missing   = (-not $existingIds.ContainsKey($sid))
+            missing   = $missing
         })
     }
     if ($normSessions.Count -gt 0) {
@@ -159,6 +188,17 @@ foreach ($g in $rawGroups) {
             tabColor = $gColor
             sessions = @($normSessions)
         }
+    }
+}
+
+# An agent's CLI missing means every one of its restored tabs would die on launch --
+# say so once per agent actually referenced by the loaded snapshot, upfront.
+$referencedAgents = @($groups.sessions.agent | Select-Object -Unique)
+foreach ($a in $referencedAgents) {
+    $spec = $script:agentSpecs[$a]
+    if ($spec -and -not (Get-Command $spec.exe -ErrorAction SilentlyContinue)) {
+        Write-Host ""
+        Write-Host "  WARNING: '$($spec.exe)' was not found on PATH. Tabs will open but resume will fail." -ForegroundColor Yellow
     }
 }
 
@@ -201,7 +241,7 @@ function Open-WorkspaceWindows {
             }
             $wtParts += "cmd"
             $wtParts += "/k"
-            $wtParts += "`"claude --resume $($s.sessionId)`""
+            $wtParts += "`"$(Get-ResumeCommand -Agent $s.agent -SessionId $s.sessionId)`""
             $first = $false
         }
 
@@ -259,6 +299,7 @@ for ($gi = 0; $gi -lt $groups.Count; $gi++) {
         $sessionMap[$globalIdx] = @($gi, $si)
 
         Write-Host "    $globalIdx. " -NoNewline -ForegroundColor DarkGray
+        Write-Host "[$($s.agent)] " -NoNewline -ForegroundColor DarkGray
         Write-Host "$($s.title)" -NoNewline -ForegroundColor White
         if ($s.missing) {
             Write-Host " [missing]" -NoNewline -ForegroundColor Red

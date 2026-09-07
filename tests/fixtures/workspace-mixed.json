@@ -1,0 +1,61 @@
+{
+  "created": "2026-09-06T12:00:00.0000000-07:00",
+  "groups": [
+    {
+      "name": "mixed-group",
+      "tabColor": "#4A9BD9",
+      "sessions": [
+        {
+          "sessionId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+          "projectPath": "C:\\Users\\SIMANGO",
+          "project": "mixed-group",
+          "summary": "Claude session, no agent field",
+          "tabName": "claude-tab",
+          "tabColor": "#4A9BD9",
+          "firstPrompt": "Claude session, no agent field",
+          "modified": "2026-09-06T11:55:00.0000000-07:00",
+          "gitBranch": "main",
+          "slug": null,
+          "group": "mixed-group",
+          "source": "process",
+          "tier": "open",
+          "tabLabel": ""
+        },
+        {
+          "sessionId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+          "agent": "codex",
+          "projectPath": "C:\\Users\\SIMANGO",
+          "project": "mixed-group",
+          "summary": "Codex session",
+          "tabName": "codex-tab",
+          "tabColor": "#4A9BD9",
+          "firstPrompt": "Codex session",
+          "modified": "2026-09-06T11:50:00.0000000-07:00",
+          "gitBranch": "main",
+          "slug": null,
+          "group": "mixed-group",
+          "source": "process",
+          "tier": "open",
+          "tabLabel": ""
+        },
+        {
+          "sessionId": "c3d4e5f6-a7b8-9012-cdef-123456789012",
+          "agent": "pwn & calc",
+          "projectPath": "C:\\Users\\SIMANGO",
+          "project": "mixed-group",
+          "summary": "Hostile agent field",
+          "tabName": "hostile-tab",
+          "tabColor": "#4A9BD9",
+          "firstPrompt": "Hostile agent field",
+          "modified": "2026-09-06T11:45:00.0000000-07:00",
+          "gitBranch": "main",
+          "slug": null,
+          "group": "mixed-group",
+          "source": "process",
+          "tier": "open",
+          "tabLabel": ""
+        }
+      ]
+    }
+  ]
+}
