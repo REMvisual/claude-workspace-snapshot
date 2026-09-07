@@ -209,7 +209,7 @@ function Get-LastShutdownInfo {
 # means we don't need a code change every time one shows up. The explicit named
 # tags are kept below only as documentation of shapes seen in the wild; the
 # leading "<[A-Za-z]" branch is what actually does the work.
-$script:codexSyntheticRe = '^\s*(#\s*AGENTS\.md instructions|<[A-Za-z]|<environment_context|<user_instructions|<INSTRUCTIONS)'
+$script:codexSyntheticRe = '^\s*(#\s*AGENTS\.md instructions|</?[A-Za-z]|<environment_context|<user_instructions|<INSTRUCTIONS)'
 
 # A running codex.exe holds its rollout file open for writing. [System.IO.File]::ReadLines
 # and Get-Content open with the CLR default (FileShare.Read, and codex's own handle wants

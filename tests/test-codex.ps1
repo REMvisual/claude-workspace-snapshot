@@ -27,6 +27,14 @@ It 'skips synthetic AGENTS.md preamble and finds the typed prompt' {
     $p = Get-CodexFirstPrompt -Path (Join-Path $fx 'rollout-user.jsonl')
     Assert-Equal 'juar making sure that we are using our deisgn mocup for proper design.' $p
 }
+It 'skips a bare closing tag left over from a split attachment' {
+    # A closing tag like </image> has "/" where the general tag rule checks for a
+    # tag-name character, so it must be explicitly allowed to fall through as
+    # synthetic too, or it leaks as if it were the user's typed prompt.
+    $p = Get-CodexFirstPrompt -Path (Join-Path $fx 'rollout-user.jsonl')
+    Assert-True ($p -ne '</image>') 'closing tag should never be returned as the prompt'
+    Assert-Equal 'juar making sure that we are using our deisgn mocup for proper design.' $p
+}
 It 'reads a rollout while codex holds it open for writing (live-session lock)' {
     # A real running codex.exe opens its rollout with FileAccess.ReadWrite and a
     # FileShare that still permits external readers, PROVIDED the reader also
