@@ -112,7 +112,7 @@ It 'hydrates a snapshot-recorded Codex session whose rollout is outside every ac
         New-Item -ItemType Directory -Path $sessDir -Force | Out-Null
         $rollout = Join-Path $sessDir "rollout-2026-09-01T00-00-00-${sid}.jsonl"
         Copy-Item -LiteralPath (Join-Path $script:testsRoot 'fixtures\rollout-user.jsonl') -Destination $rollout -Force
-        # 10 days before the boot: outside the 30-minute recency window AND outside
+        # 10 days before the boot: outside the default recency window AND outside
         # [shutdown-4h, shutdown+5m], so only the lazy index can find it.
         (Get-Item -LiteralPath $rollout).LastWriteTime = $boot.AddDays(-10)
 

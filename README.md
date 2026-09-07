@@ -125,8 +125,8 @@ It rebuilds your Windows Terminal layout -- one window per project, each tab res
 
 | Command | Description |
 |---------|-------------|
-| `workspace-snapshot.bat` | Snapshot with default 30-minute activity window |
-| `workspace-snapshot.bat 60` | Snapshot with 60-minute window (catches idle sessions) |
+| `workspace-snapshot.bat` | Snapshot with default 120-minute activity window |
+| `workspace-snapshot.bat 360` | Snapshot with a custom 360-minute window (catches long-idle sessions) |
 | `workspace-snapshot.bat --auto` | Non-interactive: save everything detected (for scheduled tasks) |
 | `workspace-snapshot.bat --auto --open-only` | Non-interactive: save only tabs that are confirmed/likely open |
 | `workspace-snapshot.bat --out <file>` | Write the snapshot to an alternate file (named workspaces) |

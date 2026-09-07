@@ -10,8 +10,8 @@
 #           around the real shutdown time -- inferred, never saved by --auto
 # Real Windows Terminal tab titles are shown as ground truth via UIAutomation.
 #
-# Usage: workspace-snapshot.bat                      (default: 30min file window, interactive)
-#        workspace-snapshot.bat 60                   (custom file activity window in minutes)
+# Usage: workspace-snapshot.bat                      (default: 120min file window, interactive)
+#        workspace-snapshot.bat 360                  (custom file activity window in minutes)
 #        workspace-snapshot.bat --auto               (non-interactive: save everything detected)
 #        workspace-snapshot.bat --auto --open-only   (non-interactive: save only open/likely-open tabs)
 #        workspace-snapshot.bat --out <file>         (write snapshot somewhere other than workspace.json)
@@ -23,7 +23,7 @@
 # before every save, and the new file is written atomically (temp + rename).
 
 param(
-    [int]$Minutes = 30,
+    [int]$Minutes = 120,
     [switch]$Auto,
     [switch]$OpenOnly,
     [string]$OutFile,
@@ -58,7 +58,7 @@ if ($badArgs.Count -gt 0) {
     Show-SnapshotUsage
     exit 1
 }
-if ($Minutes -lt 1) { $Minutes = 30 }
+if ($Minutes -lt 1) { $Minutes = 120 }
 
 # Allowlisted -- $Agent selects code paths only, and is never interpolated into a
 # command line or a path.
@@ -787,6 +787,94 @@ function Set-TabLabels {
     return $cleanTabs
 }
 
+# Method C's matcher, extracted from the main flow so it can be tested. A bare
+# claude.exe (no uuid in its cmdline) betrays its session through its working
+# directory; which transcript in that project dir it OWNS is decided here.
+#
+# Two passes, in this order:
+#   1. Every process claims the newest unclaimed transcript CREATED since it launched.
+#      A fresh `claude` writes its session file within seconds of starting, so this is
+#      the strong signal and it is settled for every process before any weaker claim
+#      is allowed -- a resumed tab must not be able to take a younger tab's
+#      freshly-created file while that tab is still waiting its turn.
+#   2. Only the processes still unmatched then claim the newest unclaimed transcript
+#      MODIFIED since they launched. A session started with `claude --resume` has a
+#      transcript that PREDATES its process, so pass 1 can never see it; but a live
+#      tab writes to its transcript, so "modified since this process started" is
+#      strong evidence of ownership once every created-since-launch claim is settled.
+#
+# Both passes take newest process first, so two tabs in the same project cannot steal
+# each other's session, and $claimed enforces one transcript per process / one process
+# per transcript. An idle resumed tab that has not been written to since it launched
+# stays genuinely unidentifiable and is left for the caller's $bareOpenCount fallback.
+#
+# Never-appended files are excluded from both passes. Claude Code drops a one-line
+# {"type":"bridge-session"} stub in the project dir for sessions that never took a
+# prompt; it is written once at creation, so LastWriteTime == CreationTime to the tick.
+# Such a file has no prompt and no cwd, so Get-ClaudeSessionRecord discards it later --
+# claiming one costs a live tab its only claim and produces no row at all. Measured on
+# a real 6-tab VTWO window: a resumed tab took a 21-hour-old 267-byte stub in pass 1,
+# was dropped as unrestorable, and its actively-written transcript fell through to the
+# [F] "recent file activity" tier instead of [OPEN].
+#
+# $CwdResolver takes a pid and returns that process's working directory (or $null);
+# production passes the WsSnapProcCwd PEB reader, tests pass a lookup table.
+# Returns the claimed session ids as a plain string[], in claim order -- callers wrap
+# the call in @() so an empty result has to unroll to an empty array, not to one item.
+function Select-BareTabMatches {
+    param(
+        $Procs,
+        [hashtable]$JsonlByDir,
+        [hashtable]$ClaimedIds,
+        [string]$ProjectsDir,
+        [scriptblock]$CwdResolver
+    )
+    $claimed = @{}
+    if ($ClaimedIds) { foreach ($k in $ClaimedIds.Keys) { $claimed[$k] = $true } }
+    $won = New-Object System.Collections.Generic.List[string]
+
+    # Resolve each process's project dir and start time once; both passes reuse it.
+    $ctx = New-Object System.Collections.Generic.List[object]
+    foreach ($p in @($Procs | Sort-Object CreationDate -Descending)) {
+        $procCwd = $null
+        try { $procCwd = & $CwdResolver ([uint32]$p.ProcessId) } catch {}
+        if (-not $procCwd) { continue }
+        # Claude Code encodes a project dir by replacing every non-alphanumeric char with '-'
+        $projDirName = "$procCwd".TrimEnd('\') -replace '[^A-Za-z0-9]', '-'
+        $projDirKey = (Join-Path $ProjectsDir $projDirName).ToLower()
+        if (-not $JsonlByDir.ContainsKey($projDirKey)) { continue }
+        $ctx.Add([pscustomobject]@{
+            DirKey     = $projDirKey
+            StartSlack = $p.CreationDate.AddSeconds(-60)
+            Matched    = $false
+        })
+    }
+
+    foreach ($pass in 1, 2) {
+        foreach ($c in $ctx) {
+            if ($c.Matched) { continue }
+            $slack = $c.StartSlack
+            $candidates = @($JsonlByDir[$c.DirKey] |
+                Where-Object {
+                    $_.BaseName -match "^$uuidRe$" -and
+                    -not $claimed.ContainsKey($_.BaseName) -and
+                    $_.LastWriteTime -gt $_.CreationTime -and
+                    $_.LastWriteTime -ge $slack
+                })
+            if ($pass -eq 1) {
+                $candidates = @($candidates | Where-Object { $_.CreationTime -ge $slack })
+            }
+            $match = $candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($match) {
+                $claimed[$match.BaseName] = $true
+                $c.Matched = $true
+                $won.Add($match.BaseName)
+            }
+        }
+    }
+    return $won.ToArray()
+}
+
 # Test seam: dot-source with WSS_LOAD_ONLY=1 to get the functions without running the tool.
 if ($env:WSS_LOAD_ONLY -eq '1') { return }
 
@@ -860,47 +948,24 @@ if ($Agent -in @('claude', 'all')) {
         }
     }
 
-    # Method C: bare-tab cwd matching — a bare claude.exe (no uuid in its cmdline) still
+    # Method C: bare-tab cwd matching -- a bare claude.exe (no uuid in its cmdline) still
     # betrays its session: read the process's working directory out of its PEB (read-only,
-    # same-user), map it to the matching ~/.claude/projects dir, and take the newest .jsonl
-    # CREATED since that process launched (a bare claude.exe creates its session file within
-    # seconds of starting; /clear successors are created later in its lifetime). Newest tabs
-    # claim files first so two tabs in the same project don't grab each other's session.
-    # Unmatched tabs stay in $bareOpenCount and fall back to the recency promotion below.
+    # same-user), map it to the matching ~/.claude/projects dir, and let it claim a
+    # transcript there. The two-pass claiming rules live in Select-BareTabMatches, above
+    # the test seam. Unmatched tabs stay in $bareOpenCount and fall back to the recency
+    # promotion below.
     if ($bareTabProcs.Count -gt 0) {
         Initialize-ProcCwdReader
         if ('WsSnapProcCwd' -as [type]) {
             $claimedIds = @{}
             foreach ($k in $confirmedOpen.Keys) { $claimedIds[$k] = $true }
             foreach ($k in $confirmedBg.Keys)   { $claimedIds[$k] = $true }
-            foreach ($p in @($bareTabProcs | Sort-Object CreationDate -Descending)) {
-                $procCwd = $null
-                try { $procCwd = [WsSnapProcCwd]::Get([uint32]$p.ProcessId) } catch {}
-                if (-not $procCwd) { continue }
-                # Claude Code encodes a project dir by replacing every non-alphanumeric char with '-'
-                $projDirName = $procCwd.TrimEnd('\') -replace '[^A-Za-z0-9]', '-'
-                $projDirKey = (Join-Path $projectsDir $projDirName).ToLower()
-                if (-not $jsonlByDir.ContainsKey($projDirKey)) { continue }
-                $startSlack = $p.CreationDate.AddSeconds(-60)
-                $candidates = @($jsonlByDir[$projDirKey] |
-                    Where-Object {
-                        $_.BaseName -match "^$uuidRe$" -and
-                        -not $claimedIds.ContainsKey($_.BaseName) -and
-                        $_.LastWriteTime -ge $startSlack
-                    })
-                # Files created before the process belong to OTHER sessions, however fresh
-                # their mtime looks (a tab closed minutes ago, a remote resume of an old
-                # session). Claiming by mtime alone let such a file steal the tab's identity
-                # and pushed the tab's real session out of the list entirely. Fall back to
-                # pure recency only when no created-after file exists (in-app /resume).
-                $ownCreated = @($candidates | Where-Object { $_.CreationTime -ge $startSlack })
-                if ($ownCreated.Count -gt 0) { $candidates = $ownCreated }
-                $match = $candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-                if ($match) {
-                    $confirmedOpen[$match.BaseName] = $true
-                    $claimedIds[$match.BaseName] = $true
-                    $bareOpenCount--
-                }
+            $reader = { param([uint32]$procId) [WsSnapProcCwd]::Get($procId) }
+            foreach ($sid in @(Select-BareTabMatches -Procs $bareTabProcs -JsonlByDir $jsonlByDir `
+                                    -ClaimedIds $claimedIds -ProjectsDir $projectsDir -CwdResolver $reader)) {
+                $confirmedOpen[$sid] = $true
+                $claimedIds[$sid] = $true
+                $bareOpenCount--
             }
         }
     }
