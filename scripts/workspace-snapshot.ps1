@@ -199,6 +199,64 @@ function Get-LastShutdownInfo {
     return Resolve-LastShutdown -LastBoot $LastBoot -Events $events
 }
 
+# Codex writes AGENTS.md and environment context as the first role:user items --
+# the same class of synthetic prompt the Claude path already skips.
+$script:codexSyntheticRe = '^\s*(#\s*AGENTS\.md instructions|<environment_context|<user_instructions|<INSTRUCTIONS)'
+
+function Get-CodexSessionMeta {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $line = Get-Content -LiteralPath $Path -TotalCount 1 -ErrorAction SilentlyContinue
+    if (-not $line) { return $null }
+    try { $obj = $line | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
+    if ($obj.type -ne 'session_meta') { return $null }
+    $p = $obj.payload
+    # subagent threads are Codex's isSidechain -- never restorable as a tab
+    if ("$($p.thread_source)" -ne 'user') { return $null }
+    if (-not $p.session_id -or -not $p.cwd) { return $null }
+    return [pscustomobject]@{
+        sessionId = "$($p.session_id)"
+        cwd       = "$($p.cwd)"
+        started   = $p.timestamp
+    }
+}
+
+function Get-CodexTitleMap {
+    param([string]$IndexPath)
+    $map = @{}
+    if (-not (Test-Path -LiteralPath $IndexPath)) { return $map }
+    foreach ($line in [System.IO.File]::ReadLines($IndexPath)) {
+        if (-not $line) { continue }
+        try { $o = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+        if (-not $o.id -or -not $o.thread_name) { continue }
+        $u = [datetime]::MinValue
+        try { $u = [datetime]::Parse($o.updated_at) } catch {}
+        if (-not $map.ContainsKey($o.id) -or $u -ge $map[$o.id].updated) {
+            $map[$o.id] = [pscustomobject]@{ name = "$($o.thread_name)"; updated = $u }
+        }
+    }
+    return $map
+}
+
+function Get-CodexFirstPrompt {
+    param([string]$Path, [int]$MaxLines = 400)
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $n = 0
+    foreach ($line in [System.IO.File]::ReadLines($Path)) {
+        $n++
+        if ($n -gt $MaxLines) { break }
+        if ($line -notmatch '"role":"user"') { continue }
+        try { $o = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+        if ($o.payload.role -ne 'user') { continue }
+        foreach ($c in @($o.payload.content)) {
+            if ($c.type -ne 'input_text' -or -not $c.text) { continue }
+            if ($c.text -match $script:codexSyntheticRe) { continue }
+            return $c.text
+        }
+    }
+    return $null
+}
+
 # Test seam: dot-source with WSS_LOAD_ONLY=1 to get the functions without running the tool.
 if ($env:WSS_LOAD_ONLY -eq '1') { return }
 
