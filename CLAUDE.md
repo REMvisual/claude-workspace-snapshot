@@ -5,7 +5,7 @@ A pair of PowerShell scripts that snapshot live Claude Code sessions on Windows 
 Source of truth:
 - `scripts/workspace-snapshot.ps1` — detects and saves live Claude Code and Codex sessions (with pre-shutdown history-recovery fallback)
 - `scripts/workspace-restore.ps1` — rebuilds Windows Terminal tabs from `~/.claude/workspace.json`
-- `tests/run-tests.ps1` — full test suite; run with `powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1` before committing changes to either script (also run under `pwsh` -- Windows PowerShell 5.1 on this machine is missing `Get-FileHash`, which fails two of the tests for reasons unrelated to the scripts themselves)
+- `tests/run-tests.ps1` — full test suite; run with `powershell -NoProfile -ExecutionPolicy Bypass -File tests\run-tests.ps1` before committing changes to either script (also run under `pwsh` -- both hosts should be all-green)
 
 ## OpenViking Memory
 
