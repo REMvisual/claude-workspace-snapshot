@@ -79,10 +79,25 @@ function Get-SafeTabName {
 
 $uuidRe = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 
+# Deterministic color palette -- each project gets a stable color based on its name.
+# Defined above the test seam because Get-ProjectColor (and New-CodexSessionRecord,
+# which calls it) must be dot-sourceable without running the tool.
+$colorPalette = @(
+    '#4A9BD9','#D94A4A','#9B59B6','#E67E22','#2ECC71',
+    '#1ABC9C','#F1C40F','#E74C3C','#3498DB','#E91E63',
+    '#8E44AD','#D35400','#27AE60','#2980B9','#C0392B',
+    '#16A085','#F39C12','#7D3C98','#2471A3','#CB4335'
+)
+
+# Case-normalised on purpose. A project's leaf name reaches us from two places with
+# two casings: Claude reports the cwd its own process recorded, Codex reports whatever
+# the user typed at the prompt ("cd c:\standalone\vtwo"). Hashing case-sensitively gave
+# "vtwo" and "VTWO" different colors, so one window group could restore with two
+# different tab colors.
 function Get-ProjectColor {
     param([string]$Name)
     [int]$hash = 5381
-    foreach ($c in $Name.ToCharArray()) {
+    foreach ($c in "$Name".ToLower().ToCharArray()) {
         $hash = (($hash * 33) + [int]$c) -band 0x7FFFFFFF
     }
     $idx = $hash % $colorPalette.Count
@@ -391,6 +406,78 @@ public static class WsSnapProcCwd {
     } catch {}
 }
 
+# A held write-lock proves the Codex session is ALIVE, nothing more. codex.exe carries
+# no session id on its command line, so the only way to tell an on-screen tab from a
+# background/remote codex is to match the session's own cwd against the cwds of the
+# codex.exe processes running under a WindowsTerminal.exe.
+function Resolve-CodexTier {
+    param(
+        [string]$SessionId,
+        [string]$Cwd,
+        [hashtable]$HeldIds,
+        [hashtable]$TabCwds
+    )
+    if (-not $HeldIds -or -not $HeldIds.ContainsKey($SessionId)) { return 'recent' }
+    if ($TabCwds -and $TabCwds.ContainsKey("$Cwd".TrimEnd('\').ToLower())) { return 'open' }
+    return 'background'
+}
+
+# Projects a Codex thread into the SAME record shape the Claude pass emits, so every
+# consumer downstream (tab-title matching, grouping, display, save, restore) stays
+# agent-agnostic. Codex has no equivalent of ai-title / summary / slug / gitBranch,
+# so those stay empty and the thread name carries the display.
+#
+# Title precedence: session_index thread name > first genuinely typed prompt >
+# the project name. That last fallback exists because Task 3 tightened the synthetic-
+# preamble filter: a brand-new thread has no session_index entry yet AND may so far
+# contain nothing but synthetic preamble, which would otherwise yield no title and
+# silently drop a live session. A weak row beats a missing one.
+function New-CodexSessionRecord {
+    param(
+        [string]$SessionId,
+        [string]$Cwd,
+        [string]$IndexTitle,
+        [string]$FirstPrompt,
+        [datetime]$Modified,
+        [string]$Tier
+    )
+    $project = Split-Path $Cwd -Leaf
+
+    $title = $IndexTitle
+    if (-not $title) { $title = $FirstPrompt }
+    if (-not $title) { $title = $project }
+    if (-not $title) { return $null }
+
+    $tabName = Get-SafeTabName ($title -replace '<[^>]+>', '')
+    if ($tabName.Length -gt 40) { $tabName = $tabName.Substring(0, 37) + '...' }
+
+    $prompt = ''
+    if ($FirstPrompt) {
+        $prompt = if ($FirstPrompt.Length -gt 80) { $FirstPrompt.Substring(0, 77) + '...' } else { $FirstPrompt }
+    }
+
+    # 'process' means a running process proves the tier; 'file' means mtime alone does.
+    $source = if ($Tier -eq 'open' -or $Tier -eq 'background') { 'process' } else { 'file' }
+
+    return [PSCustomObject]@{
+        sessionId   = $SessionId
+        agent       = 'codex'
+        projectPath = $Cwd
+        project     = $project
+        summary     = $title
+        tabName     = Get-SafeTabName "$project`: $tabName"
+        tabColor    = Get-ProjectColor $project
+        firstPrompt = $prompt
+        modified    = $Modified.ToString('o')   # the tier sort re-Parses this -- keep round-trippable
+        gitBranch   = ''
+        slug        = ''
+        group       = $project
+        source      = $source
+        tier        = $Tier
+        tabLabel    = ''
+    }
+}
+
 # Test seam: dot-source with WSS_LOAD_ONLY=1 to get the functions without running the tool.
 if ($env:WSS_LOAD_ONLY -eq '1') { return }
 
@@ -561,16 +648,21 @@ if ($Agent -in @('codex', 'all') -and (Test-Path $codexDir)) {
     $titleMap = Get-CodexTitleMap -IndexPath (Join-Path $codexDir 'session_index.jsonl')
 
     # cwd -> is that cwd backed by a codex.exe inside a Windows Terminal tab?
+    # Collect the codex.exe processes FIRST: ~/.codex survives forever once Codex has
+    # run even once, so compiling the P/Invoke reader on the mere existence of that
+    # directory taxed every default snapshot with a cold C# compile for nothing.
+    $codexProcs = @($allProcs.Values | Where-Object { $_.Name -eq 'codex.exe' })
     $codexTabCwds = @{}
-    Initialize-ProcCwdReader
-    foreach ($p in $allProcs.Values) {
-        if ($p.Name -ne 'codex.exe') { continue }
-        if (-not (Test-UnderWindowsTerminal ([uint32]$p.ProcessId))) { continue }
-        $c = $null
-        if ('WsSnapProcCwd' -as [type]) {
-            try { $c = [WsSnapProcCwd]::Get([uint32]$p.ProcessId) } catch {}
+    if ($codexProcs.Count -gt 0) {
+        Initialize-ProcCwdReader
+        foreach ($p in $codexProcs) {
+            if (-not (Test-UnderWindowsTerminal ([uint32]$p.ProcessId))) { continue }
+            $c = $null
+            if ('WsSnapProcCwd' -as [type]) {
+                try { $c = [WsSnapProcCwd]::Get([uint32]$p.ProcessId) } catch {}
+            }
+            if ($c) { $codexTabCwds[$c.TrimEnd('\').ToLower()] = $true }
         }
-        if ($c) { $codexTabCwds[$c.TrimEnd('\').ToLower()] = $true }
     }
 
     $rollouts = @()
@@ -583,27 +675,23 @@ if ($Agent -in @('codex', 'all') -and (Test-Path $codexDir)) {
         if ($f.BaseName -notmatch "($uuidRe)$") { continue }
         $sid = $Matches[1]
         # Indexed for every rollout we look at, kept or dropped -- history recovery
-        # (Task 7) hydrates its rows from this map and cannot rebuild it.
-        if (-not $codexRolloutById.ContainsKey($sid)) { $codexRolloutById[$sid] = $f }
+        # (Task 7) hydrates its rows from this map and cannot rebuild it. Newest wins:
+        # a resumed thread can have more than one rollout, and directory-enumeration
+        # order is not recency order.
+        if (-not $codexRolloutById.ContainsKey($sid) -or $f.LastWriteTime -gt $codexRolloutById[$sid].LastWriteTime) {
+            $codexRolloutById[$sid] = $f
+        }
         $meta = Get-CodexSessionMeta -Path $f.FullName
         if (-not $meta) { continue }          # subagent thread or unparsable
-        $tier = 'recent'
-        if ($heldIds.ContainsKey($sid)) {
-            $tier = if ($codexTabCwds.ContainsKey($meta.cwd.TrimEnd('\').ToLower())) { 'open' } else { 'background' }
-        }
-        $title = $null
-        if ($titleMap.ContainsKey($sid)) { $title = $titleMap[$sid].name }
-        $prompt = Get-CodexFirstPrompt -Path $f.FullName
-        if (-not $title) { $title = $prompt }
-        # Never drop a real session for lack of a title: a brand-new thread has no
-        # session_index entry yet and may have nothing but synthetic preamble so far.
-        # A weak row (the project name) beats a missing one.
-        if (-not $title) { $title = Split-Path $meta.cwd -Leaf }
-        if (-not $title) { continue }
+        $indexTitle = $null
+        if ($titleMap.ContainsKey($sid)) { $indexTitle = $titleMap[$sid].name }
         [void]$codexRecords.Add([pscustomobject]@{
-            sessionId = $sid; agent = 'codex'; cwd = $meta.cwd
-            title = $title; firstPrompt = $prompt
-            modified = $f.LastWriteTime; tier = $tier
+            sessionId   = $sid
+            cwd         = $meta.cwd
+            indexTitle  = $indexTitle
+            firstPrompt = Get-CodexFirstPrompt -Path $f.FullName
+            modified    = $f.LastWriteTime
+            tier        = Resolve-CodexTier -SessionId $sid -Cwd $meta.cwd -HeldIds $heldIds -TabCwds $codexTabCwds
         })
     }
 }
@@ -615,6 +703,26 @@ if ($Agent -in @('codex', 'all') -and (Test-Path $codexDir)) {
 $historyMode = $false
 $historySubtitle = ''
 
+# INTERIM ANTI-CLOBBER GUARD -- Task 7 supersedes this along with the whole block below.
+# The "--auto must never overwrite a good pre-reboot snapshot" invariant used to be
+# enforced inside the history branch, which fired whenever Claude found nothing. Now a
+# single live Codex session keeps us out of that branch, so a scheduled post-blackout
+# tick would replace a 9-session pre-reboot workspace.json with a one-row Codex snapshot
+# -- recoverable only from workspace-backups, which keeps just 5. Hoisted out here so it
+# is keyed on the CLAUDE side alone, for any agent selection that included Claude.
+# (--agent codex is exempt: the user asked only for Codex, so there is no Claude
+# expectation to protect and a live Codex session is exactly what should be saved.)
+if ($liveIds.Count -eq 0 -and $Agent -ne 'codex' -and $Auto) {
+    Write-Host ""
+    Write-Host "  No live Claude sessions detected." -ForegroundColor Yellow
+    Write-Host "  (checked running processes + files modified in last $Minutes min)" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  Auto mode: nothing saved (workspace.json left untouched)." -ForegroundColor DarkGray
+    Write-Host ""
+    exit 0
+}
+
+# Nothing found for ANY selected agent -- offer history recovery (Claude-only for now).
 if ($liveIds.Count -eq 0 -and $codexRecords.Count -eq 0) {
     $agentLabel = switch ($Agent) { 'claude' { 'Claude' } 'codex' { 'Codex' } default { 'Claude or Codex' } }
     Write-Host ""
@@ -624,16 +732,10 @@ if ($liveIds.Count -eq 0 -and $codexRecords.Count -eq 0) {
 
     # History recovery still only knows how to read ~/.claude/projects, so it has
     # nothing to offer a Codex-only run. Bail out rather than prompt for a search
-    # that could only ever return Claude sessions.
+    # that could only ever return Claude sessions. Task 7 replaces this.
     if ($Agent -eq 'codex') { exit 0 }
 
-    if ($Auto) {
-        # A scheduled/non-interactive run must never overwrite a good pre-reboot
-        # snapshot with history guesses. Leave workspace.json alone and bail out.
-        Write-Host "  Auto mode: nothing saved (workspace.json left untouched)." -ForegroundColor DarkGray
-        Write-Host ""
-        exit 0
-    }
+    # The --auto anti-clobber exit for this path is the hoisted guard above.
 
     # Tip if a recent workspace.json from before the last boot already exists
     try {
@@ -727,14 +829,6 @@ Get-ChildItem -Path $projectsDir -Filter 'sessions-index.json' -Recurse -ErrorAc
         }
     } catch {}
 }
-
-# Deterministic color palette -- each project gets a stable color based on its name
-$colorPalette = @(
-    '#4A9BD9','#D94A4A','#9B59B6','#E67E22','#2ECC71',
-    '#1ABC9C','#F1C40F','#E74C3C','#3498DB','#E91E63',
-    '#8E44AD','#D35400','#27AE60','#2980B9','#C0392B',
-    '#16A085','#F39C12','#7D3C98','#2471A3','#CB4335'
-)
 
 $sessions = [System.Collections.ArrayList]::new()
 $haystacks = @{}         # sessionId -> normalized metadata text, used for tab-title matching
@@ -843,41 +937,19 @@ foreach ($sid in $liveIds) {
 }
 
 # Fold the Codex pass into the same record shape, so tab-title matching, grouping,
-# display and save all stay agent-agnostic from here down. Codex has no equivalent of
-# ai-title/summary/slug/gitBranch, so those stay empty and the thread name (or first
-# real prompt) carries the display.
+# display and save all stay agent-agnostic from here down. The projection itself lives
+# in New-CodexSessionRecord above the test seam so it can be unit-tested.
 foreach ($c in $codexRecords) {
-    $cProject = Split-Path $c.cwd -Leaf
-    $cTabName = Get-SafeTabName ($c.title -replace '<[^>]+>', '')
-    if ($cTabName.Length -gt 40) { $cTabName = $cTabName.Substring(0, 37) + '...' }
+    $r = New-CodexSessionRecord -SessionId $c.sessionId -Cwd $c.cwd `
+        -IndexTitle $c.indexTitle -FirstPrompt $c.firstPrompt `
+        -Modified $c.modified -Tier $c.tier
+    if (-not $r) { continue }
 
-    $codexPrompt = ''
-    if ($c.firstPrompt) {
-        $codexPrompt = if ($c.firstPrompt.Length -gt 80) { $c.firstPrompt.Substring(0, 77) + '...' } else { $c.firstPrompt }
-    }
+    # Haystacks use the UNTRUNCATED prompt, exactly as the Claude loop does.
+    $haystacks[$r.sessionId] = ("$($r.summary) $($c.firstPrompt) $($r.project)").ToLower() -replace '[^a-z0-9]', ''
+    $strongHaystacks[$r.sessionId] = ("$($r.summary) $($r.project)").ToLower() -replace '[^a-z0-9]', ''
 
-    $haystacks[$c.sessionId] = ("$($c.title) $($c.firstPrompt) $cProject").ToLower() -replace '[^a-z0-9]', ''
-    $strongHaystacks[$c.sessionId] = ("$($c.title) $cProject").ToLower() -replace '[^a-z0-9]', ''
-
-    $cSource = if ($c.tier -eq 'open' -or $c.tier -eq 'background') { 'process' } else { 'file' }
-
-    [void]$sessions.Add([PSCustomObject]@{
-        sessionId   = $c.sessionId
-        agent       = 'codex'
-        projectPath = $c.cwd
-        project     = $cProject
-        summary     = $c.title
-        tabName     = Get-SafeTabName "$cProject`: $cTabName"
-        tabColor    = Get-ProjectColor $cProject
-        firstPrompt = $codexPrompt
-        modified    = $c.modified.ToString('o')
-        gitBranch   = ''
-        slug        = ''
-        group       = $cProject
-        source      = $cSource
-        tier        = $c.tier
-        tabLabel    = ''
-    })
+    [void]$sessions.Add($r)
 }
 
 # Promote: we counted bare interactive claude.exe tabs (no uuid in cmdline) — the
@@ -984,7 +1056,17 @@ if (-not $historyMode -and $cleanTabs.Count -gt 0) {
         # Restored tabs should come back with the user's own name -- and without
         # stacking a second "project:" prefix when the tab already carries one
         # from a previous restore ("SIMANGO: SIMANGO: ...")
-        if ($pair.tab.ToLower().StartsWith("$($pair.s.project.ToLower()):")) {
+        #
+        # Degenerate case: the tab is named after nothing but its project ("VTWO").
+        # Adopting it would collapse tabName to "VTWO: VTWO" and throw away the only
+        # description this session has -- and workspace-restore.ps1 titles the restored
+        # tab from tabName alone, never summary, so that loss is permanent. Keep the
+        # label for display, keep the descriptive tabName for the round trip.
+        $tabNorm = $pair.tab.ToLower() -replace '[^a-z0-9]', ''
+        $projNorm = $pair.s.project.ToLower() -replace '[^a-z0-9]', ''
+        if ($tabNorm -eq $projNorm) {
+            # tabLabel is already set above; leave tabName as built from the summary.
+        } elseif ($pair.tab.ToLower().StartsWith("$($pair.s.project.ToLower()):")) {
             $pair.s.tabName = Get-SafeTabName $pair.tab
         } else {
             $pair.s.tabName = Get-SafeTabName "$($pair.s.project)`: $($pair.tab)"

@@ -154,3 +154,95 @@ It 'returns an array with exactly two held locks' {
         }
     } finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
 }
+
+# --- Task 5: the Codex -> unified record projection -------------------------
+
+# Hard-coded ON PURPOSE. Deriving this list from a live Claude record at runtime
+# would let BOTH sides drift together and still pass. This is the contract
+# workspace-restore.ps1 and the tier sort depend on; if it changes, this must be
+# edited deliberately.
+$script:expectedRecordFields = @(
+    'sessionId','agent','projectPath','project','summary','tabName','tabColor',
+    'firstPrompt','modified','gitBranch','slug','group','source','tier','tabLabel'
+)
+
+It 'projects a Codex thread into exactly the Claude record field list' {
+    $r = New-CodexSessionRecord -SessionId '01a0760d-add4-72d2-ad5c-05467335623e' `
+        -Cwd 'C:\Standalone\VTWO' -IndexTitle 'Confirm approved mockup usage plan' `
+        -FirstPrompt 'some prompt' -Modified ([datetime]'2026-09-07T00:36:47') -Tier 'open'
+    $actual = @($r.PSObject.Properties | ForEach-Object { $_.Name })
+    Assert-Equal ($script:expectedRecordFields -join ',') ($actual -join ',') 'record field list drifted'
+    Assert-Equal 'codex' $r.agent
+}
+
+It 'writes modified in a form [DateTime]::Parse round-trips (the tier sort re-parses it)' {
+    $when = [datetime]'2026-09-07T00:36:47.1234567'
+    $r = New-CodexSessionRecord -SessionId 'x' -Cwd 'C:\Standalone\VTWO' `
+        -IndexTitle 't' -FirstPrompt '' -Modified $when -Tier 'recent'
+    Assert-Equal $when.Ticks ([DateTime]::Parse($r.modified)).Ticks 'modified must survive a Parse round trip'
+}
+
+It 'title precedence 1/3: the session_index thread name wins' {
+    $r = New-CodexSessionRecord -SessionId 'x' -Cwd 'C:\Standalone\VTWO' `
+        -IndexTitle 'Confirm approved mockup usage plan' -FirstPrompt 'a typed prompt' `
+        -Modified (Get-Date) -Tier 'recent'
+    Assert-Equal 'Confirm approved mockup usage plan' $r.summary
+}
+
+It 'title precedence 2/3: falls back to the first typed prompt' {
+    $r = New-CodexSessionRecord -SessionId 'x' -Cwd 'C:\Standalone\VTWO' `
+        -IndexTitle '' -FirstPrompt 'a typed prompt' -Modified (Get-Date) -Tier 'recent'
+    Assert-Equal 'a typed prompt' $r.summary
+}
+
+It 'title precedence 3/3: falls back to the project name rather than dropping the session' {
+    # Ruling B. A brand-new thread has no session_index entry AND may so far hold
+    # nothing but synthetic preamble, so both stronger sources are empty. Returning
+    # $null here would silently discard a LIVE session.
+    $r = New-CodexSessionRecord -SessionId 'x' -Cwd 'C:\Standalone\VTWO' `
+        -IndexTitle '' -FirstPrompt '' -Modified (Get-Date) -Tier 'open'
+    Assert-True ($null -ne $r) 'a titleless live session must never be dropped'
+    Assert-Equal 'VTWO' $r.summary
+}
+
+It 'tier mapping: a held lock whose cwd is an open terminal tab is open' {
+    $held = @{ 'sid-1' = $true }
+    $tabs = @{ 'c:\standalone\vtwo' = $true }
+    Assert-Equal 'open' (Resolve-CodexTier -SessionId 'sid-1' -Cwd 'C:\Standalone\VTWO' -HeldIds $held -TabCwds $tabs)
+}
+
+It 'tier mapping: a held lock with no matching tab cwd is background' {
+    $held = @{ 'sid-1' = $true }
+    $tabs = @{ 'c:\somewhere\else' = $true }
+    Assert-Equal 'background' (Resolve-CodexTier -SessionId 'sid-1' -Cwd 'C:\Standalone\VTWO' -HeldIds $held -TabCwds $tabs)
+}
+
+It 'tier mapping: no held lock is recent regardless of tab cwds' {
+    $tabs = @{ 'c:\standalone\vtwo' = $true }
+    Assert-Equal 'recent' (Resolve-CodexTier -SessionId 'sid-1' -Cwd 'C:\Standalone\VTWO' -HeldIds @{} -TabCwds $tabs)
+}
+
+It 'tier mapping: a trailing separator on the cwd still matches an open tab' {
+    $held = @{ 'sid-1' = $true }
+    $tabs = @{ 'c:\standalone\vtwo' = $true }
+    Assert-Equal 'open' (Resolve-CodexTier -SessionId 'sid-1' -Cwd 'C:\Standalone\VTWO\' -HeldIds $held -TabCwds $tabs)
+}
+
+It 'source is process for a tier a running process proves, file for a tier only mtime proves' {
+    foreach ($t in @('open','background')) {
+        $r = New-CodexSessionRecord -SessionId 'x' -Cwd 'C:\Standalone\VTWO' -IndexTitle 't' `
+            -FirstPrompt '' -Modified (Get-Date) -Tier $t
+        Assert-Equal 'process' $r.source "tier $t must be process-backed"
+        Assert-Equal $t $r.tier
+    }
+    $r = New-CodexSessionRecord -SessionId 'x' -Cwd 'C:\Standalone\VTWO' -IndexTitle 't' `
+        -FirstPrompt '' -Modified (Get-Date) -Tier 'recent'
+    Assert-Equal 'file' $r.source 'tier recent is file-backed'
+}
+
+It 'colors a project the same whichever casing the agent reported its cwd in' {
+    # Codex records whatever the user typed ("cd c:\standalone\vtwo"); Claude records
+    # its own process cwd. A case-sensitive hash split one window group across two colors.
+    Assert-Equal (Get-ProjectColor 'VTWO') (Get-ProjectColor 'vtwo')
+    Assert-Equal (Get-ProjectColor 'VTWO') (Get-ProjectColor 'Vtwo')
+}
