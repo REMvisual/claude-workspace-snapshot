@@ -72,7 +72,13 @@ if ($Agent -notin @('claude', 'codex', 'all')) {
 
 $claudeDir = Join-Path $env:USERPROFILE '.claude'
 $projectsDir = Join-Path $claudeDir 'projects'
-$workspaceFile = Join-Path $claudeDir 'workspace.json'
+# Two different jobs, so two different variables. $workspaceFile is the SAVE TARGET and
+# --out moves it. $canonicalWorkspaceFile is the pre-crash RECORD that history mining
+# reads, and --out must never move that: redirecting the destination to a scratch path
+# used to redirect the source too, so the cautious "--history --out C:\tmp\probe.json"
+# dry run found no snapshot at all and reported the pre-blackout sessions as gone.
+$canonicalWorkspaceFile = Join-Path $claudeDir 'workspace.json'
+$workspaceFile = $canonicalWorkspaceFile
 if ($OutFile) {
     $workspaceFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutFile)
 }
@@ -616,6 +622,11 @@ function Get-SnapshotHistoryIds {
             foreach ($s in @($g.sessions)) {
                 $sid = "$($s.sessionId)".Trim().ToLower()
                 if ($sid -notmatch "^$uuidRe$" -or $seen.ContainsKey($sid)) { continue }
+                # A row saved from the history TIER is an inference this tool made, not a
+                # record of an open tab. Reading it back on the next boot would rank it
+                # top (source='snapshot') and exempt it from the trivial-session demotion,
+                # laundering a guess into evidence across two boot cycles. Refuse it.
+                if ("$($s.tier)" -eq 'history') { continue }
                 $seen[$sid] = $true
                 $fileOut += [pscustomobject]@{
                     sessionId = $sid
@@ -959,14 +970,16 @@ try { $lastBoot = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).Last
 # Report the empty live set BEFORE the sweep runs, so the reason for a history-only
 # list is on screen. Keyed on the live $sessions set -- $liveIds is Claude-only and is
 # unconditionally empty under --agent codex, which would make this fire always.
+$noLiveReported = $false
 if ($sessions.Count -eq 0) {
+    $noLiveReported = $true
     $agentLabel = switch ($Agent) { 'claude' { 'Claude' } 'codex' { 'Codex' } default { 'Claude or Codex' } }
     Write-Host ""
     Write-Host "  No live $agentLabel sessions detected." -ForegroundColor Yellow
     Write-Host "  (checked running processes + files modified in last $Minutes min)" -ForegroundColor DarkGray
     try {
-        if ($lastBoot -and (Test-Path $workspaceFile)) {
-            $wsMtime = (Get-Item $workspaceFile).LastWriteTime
+        if ($lastBoot -and (Test-Path $canonicalWorkspaceFile)) {
+            $wsMtime = (Get-Item $canonicalWorkspaceFile).LastWriteTime
             if ($wsMtime -lt $lastBoot) {
                 Write-Host "  Tip: workspace.json exists from $($wsMtime.ToString('MMM dd HH:mm')) -- workspace-restore.bat may already have what you need." -ForegroundColor DarkGray
             }
@@ -985,7 +998,7 @@ if ($wantHistory) {
     $winStart = $shutdownInfo.time.AddHours(-4)
     $winEnd   = $shutdownInfo.time.AddMinutes(5)
 
-    $cands = @(Get-SnapshotHistoryIds -WorkspaceFile $workspaceFile -LastBoot $bootRef)
+    $cands = @(Get-SnapshotHistoryIds -WorkspaceFile $canonicalWorkspaceFile -LastBoot $bootRef)
     $cands += @($allJsonl |
         Where-Object { $_.BaseName -match "^$uuidRe$" -and $_.LastWriteTime -ge $winStart -and $_.LastWriteTime -le $winEnd } |
         ForEach-Object { [pscustomobject]@{ sessionId = $_.BaseName; agent = 'claude'
@@ -1010,7 +1023,29 @@ if ($wantHistory) {
     if ($Agent -ne 'all') { $cands = @($cands | Where-Object { $_.agent -eq $Agent }) }
 
     $merged = Merge-SessionSets -Live @($sessions) -History $cands -Cap 25
-    $historyTruncated = $merged.truncated
+    $hydratedHistory = 0
+
+    # $codexRolloutById covers only two ACTIVITY windows (the live recency window, and
+    # the shutdown window above). A snapshot records what was OPEN, not what was active,
+    # so a Codex tab left idle overnight -- or open across a long Claude-only session --
+    # has no file activity in either window and would be dropped unhydratable. Claude's
+    # $jsonlById indexes every transcript on disk; give Codex the same reach, but LAZILY:
+    # only when a merged row actually needs an id we do not already have, so the ordinary
+    # run keeps paying nothing for a full recursive scan of ~/.codex/sessions.
+    $unresolvedCodex = @($merged.sessions |
+        Where-Object { $_.agent -eq 'codex' -and -not $codexRolloutById.ContainsKey($_.sessionId) })
+    if ($unresolvedCodex.Count -gt 0) {
+        $codexAllDir = Join-Path $env:USERPROFILE '.codex\sessions'
+        if (Test-Path $codexAllDir) {
+            foreach ($rf in @(Get-ChildItem -Path $codexAllDir -Filter 'rollout-*.jsonl' -Recurse -ErrorAction SilentlyContinue)) {
+                if ($rf.BaseName -notmatch "($uuidRe)$") { continue }
+                $rid = $Matches[1]
+                if (-not $codexRolloutById.ContainsKey($rid) -or $rf.LastWriteTime -gt $codexRolloutById[$rid].LastWriteTime) {
+                    $codexRolloutById[$rid] = $rf
+                }
+            }
+        }
+    }
 
     # Hydrate per agent, through the SAME readers the live passes use. A row we cannot
     # hydrate (transcript deleted, rollout outside every window, subagent thread) is
@@ -1037,8 +1072,25 @@ if ($wantHistory) {
         if (-not $rec) { continue }
         # 'snapshot' (was demonstrably an open tab) or 'file' (mtime near the shutdown).
         $rec.source = $h.source
+        # The readers stamp `modified` from the transcript's CURRENT mtime, which for a
+        # snapshot-backed row is whenever it was last touched -- possibly long AFTER the
+        # shutdown, if the session was resumed since. `modified` is the tier sort key, so
+        # leaving it would float post-crash activity to the top of "BEFORE LAST SHUTDOWN"
+        # and sink the sessions that genuinely predate it. Use the time the snapshot
+        # recorded instead. TryParse is load-bearing: workspace.json is user-editable and
+        # an unparseable value would throw inside Sort-Object. File-sourced rows keep the
+        # file mtime -- for those the mtime IS the evidence that put them in the window.
+        if ($h.source -eq 'snapshot' -and $h.modified) {
+            $hm = [datetime]::MinValue
+            if ([datetime]::TryParse("$($h.modified)", [ref]$hm)) { $rec.modified = $hm.ToString('o') }
+        }
+        $hydratedHistory++
         [void]$sessions.Add($rec)
     }
+
+    # Rows the merge kept but hydration could not build are just as invisible as rows the
+    # cap dropped -- report them together, or the "N more not shown" line lies by omission.
+    $historyTruncated = $merged.truncated + ($merged.sessions.Count - $hydratedHistory)
 }
 
 # Promote: we counted bare interactive claude.exe tabs (no uuid in cmdline) — the
@@ -1167,6 +1219,14 @@ if ($sessions.Count -eq 0) {
     Write-Host ""
     if ($OpenOnly) {
         Write-Host "  No open sessions found (--open-only)." -ForegroundColor Yellow
+    } elseif ($noLiveReported) {
+        # The empty live set was already announced above -- add what the sweep found,
+        # do not restate the same condition in different words.
+        if ($wantHistory) {
+            Write-Host "  No recoverable pre-shutdown sessions either -- nothing to save." -ForegroundColor Yellow
+        } else {
+            Write-Host "  Nothing to save (pre-shutdown history is off)." -ForegroundColor Yellow
+        }
     } else {
         Write-Host "  No valid live sessions found." -ForegroundColor Yellow
     }
@@ -1265,7 +1325,7 @@ for ($i = 0; $i -lt $sessions.Count; $i++) {
 
 if ($historyTruncated -gt 0) {
     Write-Host ""
-    Write-Host "  ($historyTruncated more pre-shutdown session(s) not shown -- use --history with a larger window)" -ForegroundColor DarkGray
+    Write-Host "  ($historyTruncated more pre-shutdown session(s) not shown -- over the 25-row cap, or no readable transcript left)" -ForegroundColor DarkGray
 }
 
 Write-Host ""
@@ -1284,6 +1344,30 @@ if ($Auto) {
         Write-Host "  Auto mode: only pre-shutdown history found -- nothing saved." -ForegroundColor DarkGray
         Write-Host ""
         exit 0
+    }
+    # Anti-shrink guard. Ruling C means one live Codex tab is enough to make --auto save,
+    # which on a post-blackout scheduled tick would replace a ten-tab pre-reboot
+    # workspace.json with a one-row snapshot -- the same loss the old history-mode guard
+    # existed to prevent, reached by a different route, with only the 5-deep backup
+    # rotation in the way. Narrow on purpose: --auto only (interactively the user can see
+    # what they are replacing), only while the target still PREDATES the last boot, and
+    # only when the write would STRICTLY shrink it. One save after boot ends it.
+    if ($lastBoot -and (Test-Path $workspaceFile)) {
+        $existingCount = -1
+        $existingStamp = ''
+        try {
+            $existingItem = Get-Item -LiteralPath $workspaceFile -ErrorAction Stop
+            if ($existingItem.LastWriteTime -lt $lastBoot) {
+                $existingStamp = $existingItem.LastWriteTime.ToString('MMM dd HH:mm')
+                $existingWs = Get-Content -LiteralPath $workspaceFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                $existingCount = @($existingWs.groups | ForEach-Object { $_.sessions }).Count
+            }
+        } catch { $existingCount = -1 }
+        if ($existingCount -gt $selected.Count) {
+            Write-Host "  Auto mode: $workspaceFile is from $existingStamp (before the last boot) and holds $existingCount session(s); this run found only $($selected.Count). Not overwriting -- run without --auto to replace it." -ForegroundColor Yellow
+            Write-Host ""
+            exit 0
+        }
     }
     Write-Host "  Auto mode: saving $($selected.Count) session(s)." -ForegroundColor DarkGray
 } else {
