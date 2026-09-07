@@ -1,18 +1,18 @@
-# claude-workspace-snapshot installer
-# Usage: irm https://raw.githubusercontent.com/REMvisual/claude-workspace-snapshot/master/install.ps1 | iex
+# terminal-workspace-snapshot installer
+# Usage: irm https://raw.githubusercontent.com/REMvisual/terminal-workspace-snapshot/master/install.ps1 | iex
 #
 # Pin to a specific version:
-#   $env:CWSS_BRANCH='v1.0.0'; irm https://raw.githubusercontent.com/REMvisual/claude-workspace-snapshot/master/install.ps1 | iex
+#   $env:CWSS_BRANCH='v1.0.0'; irm https://raw.githubusercontent.com/REMvisual/terminal-workspace-snapshot/master/install.ps1 | iex
 
 $ErrorActionPreference = 'Stop'
 
-$repo = 'REMvisual/claude-workspace-snapshot'
+$repo = 'REMvisual/terminal-workspace-snapshot'
 $branch = if ($env:CWSS_BRANCH) { $env:CWSS_BRANCH } else { 'master' }
 $baseUrl = "https://raw.githubusercontent.com/$repo/$branch/scripts"
 $scriptsDir = Join-Path $env:USERPROFILE '.claude\scripts'
 
 Write-Host ""
-Write-Host "  Installing claude-workspace-snapshot..." -ForegroundColor Cyan
+Write-Host "  Installing terminal-workspace-snapshot..." -ForegroundColor Cyan
 
 if (-not (Test-Path $scriptsDir)) {
     New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null

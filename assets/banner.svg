@@ -27,7 +27,7 @@
   </g>
 
   <!-- Title -->
-  <text x="180" y="68" font-family="'Segoe UI', Arial, sans-serif" font-size="40" fill="#E8E8F0" font-weight="700">claude-workspace-snapshot</text>
+  <text x="180" y="68" font-family="'Segoe UI', Arial, sans-serif" font-size="40" fill="#E8E8F0" font-weight="700">terminal-workspace-snapshot</text>
 
   <!-- One-liner -->
   <text x="180" y="104" font-family="'Segoe UI', Arial, sans-serif" font-size="20" fill="#8B8BA0">Never lose your Claude Code tabs again.</text>

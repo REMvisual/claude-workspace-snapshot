@@ -1,4 +1,4 @@
-# Contributing to claude-workspace-snapshot
+# Contributing to terminal-workspace-snapshot
 
 Thank you for considering a contribution. This project aims to stay small, focused, and reliable on Windows. These guidelines help keep things moving smoothly.
 

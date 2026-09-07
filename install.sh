@@ -1,19 +1,19 @@
 #!/bin/bash
-# claude-workspace-snapshot installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/REMvisual/claude-workspace-snapshot/master/install.sh | bash
+# terminal-workspace-snapshot installer
+# Usage: curl -fsSL https://raw.githubusercontent.com/REMvisual/terminal-workspace-snapshot/master/install.sh | bash
 #
 # Pin to a specific version:
 #   CWSS_BRANCH=v1.0.0 curl -fsSL ... | bash
 
 set -euo pipefail
 
-REPO="REMvisual/claude-workspace-snapshot"
+REPO="REMvisual/terminal-workspace-snapshot"
 BRANCH="${CWSS_BRANCH:-master}"
 BASE_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts"
 SCRIPTS_DIR="${HOME}/.claude/scripts"
 
 echo ""
-echo "  Installing claude-workspace-snapshot..."
+echo "  Installing terminal-workspace-snapshot..."
 
 mkdir -p "${SCRIPTS_DIR}"
 

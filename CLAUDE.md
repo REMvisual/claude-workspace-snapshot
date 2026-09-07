@@ -1,4 +1,4 @@
-# claude-workspace-snapshot
+# terminal-workspace-snapshot
 
 A pair of PowerShell scripts that snapshot live Claude Code sessions on Windows and restore them after a reboot. See `README.md` for the full overview.
 

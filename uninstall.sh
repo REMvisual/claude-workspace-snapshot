@@ -1,5 +1,5 @@
 #!/bin/bash
-# claude-workspace-snapshot uninstaller
+# terminal-workspace-snapshot uninstaller
 
 set -euo pipefail
 
@@ -7,7 +7,7 @@ SCRIPTS_DIR="${HOME}/.claude/scripts"
 FILES="workspace-snapshot.ps1 workspace-snapshot.bat workspace-restore.ps1 workspace-restore.bat"
 
 echo ""
-echo "  Uninstalling claude-workspace-snapshot..."
+echo "  Uninstalling terminal-workspace-snapshot..."
 
 for f in $FILES; do
     path="${SCRIPTS_DIR}/${f}"

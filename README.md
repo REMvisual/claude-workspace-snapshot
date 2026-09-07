@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="claude-workspace-snapshot" width="100%">
+  <img src="assets/banner.svg" alt="terminal-workspace-snapshot" width="100%">
 </p>
 
 
-[![Download Latest](https://img.shields.io/github/v/release/REMvisual/claude-workspace-snapshot?style=for-the-badge&label=Download&color=blue)](https://github.com/REMvisual/claude-workspace-snapshot/releases/latest)
-![Views](https://komarev.com/ghpvc/?username=REMvisualclaude-workspace-snapshot&label=Views&color=brightgreen&style=for-the-badge)
+[![Download Latest](https://img.shields.io/github/v/release/REMvisual/terminal-workspace-snapshot?style=for-the-badge&label=Download&color=blue)](https://github.com/REMvisual/terminal-workspace-snapshot/releases/latest)
+![Views](https://komarev.com/ghpvc/?username=REMvisualterminal-workspace-snapshot&label=Views&color=brightgreen&style=for-the-badge)
 
 
 
@@ -36,20 +36,20 @@ That's it. Your sessions come back in the right directories, with the right tab 
 **PowerShell (recommended):**
 
 ```powershell
-irm https://raw.githubusercontent.com/REMvisual/claude-workspace-snapshot/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/REMvisual/terminal-workspace-snapshot/master/install.ps1 | iex
 ```
 
 **Git Bash / WSL:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/REMvisual/claude-workspace-snapshot/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/REMvisual/terminal-workspace-snapshot/master/install.sh | bash
 ```
 
 **Manual:**
 
 ```bash
-git clone https://github.com/REMvisual/claude-workspace-snapshot.git
-cp claude-workspace-snapshot/scripts/* ~/.claude/scripts/
+git clone https://github.com/REMvisual/terminal-workspace-snapshot.git
+cp terminal-workspace-snapshot/scripts/* ~/.claude/scripts/
 ```
 
 ## Usage
@@ -231,7 +231,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. PRs are welcome.
 
 ---
 
-If this tool saved you time, [give it a star](https://github.com/REMvisual/claude-workspace-snapshot). It helps others find it.
+If this tool saved you time, [give it a star](https://github.com/REMvisual/terminal-workspace-snapshot). It helps others find it.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-compatible-blueviolet.svg)](https://claude.ai/code)
