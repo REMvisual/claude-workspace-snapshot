@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="terminal-workspace-snapshot" width="100%">
+  <img src="assets/banner.svg" alt="terminal-workspace-snapshot -- save and restore Claude Code and OpenAI Codex CLI terminal sessions on Windows" width="100%">
 </p>
 
 
@@ -7,6 +7,13 @@
 ![Views](https://komarev.com/ghpvc/?username=REMvisualterminal-workspace-snapshot&label=Views&color=brightgreen&style=for-the-badge)
 
 
+# terminal-workspace-snapshot
+
+**Save and restore your Claude Code and OpenAI Codex CLI terminal sessions on Windows.**
+
+Snapshots every open AI coding agent tab -- its session ID, project directory, git branch and tab title -- and brings the whole workspace back in Windows Terminal after a reboot, a crash or a power cut. One command each way, both agents in the same snapshot.
+
+It also recovers what was open *before* an unexpected shutdown, not just what is running now: the real crash time is read from the Windows event log and cross-referenced against the last snapshot taken before the machine went down.
 
 ## Why This Exists
 

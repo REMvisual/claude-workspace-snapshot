@@ -9,17 +9,17 @@
     <!-- Title bar -->
     <rect width="120" height="24" rx="8" fill="#2A2A3E"/>
     <rect y="16" width="120" height="8" fill="#2A2A3E"/>
-    <!-- Tabs -->
-    <rect x="6"  y="6" width="24" height="12" rx="3" fill="#4A9BD9"/>
-    <rect x="34" y="6" width="24" height="12" rx="3" fill="#9B59B6"/>
-    <rect x="62" y="6" width="24" height="12" rx="3" fill="#2ECC71"/>
-    <rect x="90" y="6" width="24" height="12" rx="3" fill="#E67E22"/>
+    <!-- Tabs: two agents, two tabs each -->
+    <rect x="6"  y="6" width="24" height="12" rx="3" fill="#D97757"/>
+    <rect x="34" y="6" width="24" height="12" rx="3" fill="#D97757" opacity="0.55"/>
+    <rect x="62" y="6" width="24" height="12" rx="3" fill="#10A37F"/>
+    <rect x="90" y="6" width="24" height="12" rx="3" fill="#10A37F" opacity="0.55"/>
     <!-- Content lines -->
-    <rect x="10" y="34" width="50" height="3" rx="1.5" fill="#4A9BD9" opacity="0.3"/>
-    <rect x="10" y="42" width="70" height="3" rx="1.5" fill="#9B59B6" opacity="0.25"/>
-    <rect x="10" y="50" width="40" height="3" rx="1.5" fill="#2ECC71" opacity="0.2"/>
-    <rect x="10" y="58" width="60" height="3" rx="1.5" fill="#E67E22" opacity="0.25"/>
-    <rect x="10" y="66" width="35" height="3" rx="1.5" fill="#4A9BD9" opacity="0.2"/>
+    <rect x="10" y="34" width="50" height="3" rx="1.5" fill="#D97757" opacity="0.35"/>
+    <rect x="10" y="42" width="70" height="3" rx="1.5" fill="#10A37F" opacity="0.30"/>
+    <rect x="10" y="50" width="40" height="3" rx="1.5" fill="#D97757" opacity="0.22"/>
+    <rect x="10" y="58" width="60" height="3" rx="1.5" fill="#10A37F" opacity="0.26"/>
+    <rect x="10" y="66" width="35" height="3" rx="1.5" fill="#D97757" opacity="0.20"/>
     <!-- Restore arrow -->
     <circle cx="96" cy="78" r="20" fill="#0D1117" opacity="0.9"/>
     <path d="M96 64 A14 14 0 1 1 82 78" fill="none" stroke="#4A9BD9" stroke-width="3" stroke-linecap="round"/>
@@ -27,33 +27,33 @@
   </g>
 
   <!-- Title -->
-  <text x="180" y="68" font-family="'Segoe UI', Arial, sans-serif" font-size="40" fill="#E8E8F0" font-weight="700">terminal-workspace-snapshot</text>
+  <text x="180" y="66" font-family="'Segoe UI', Arial, sans-serif" font-size="37" fill="#E8E8F0" font-weight="700">terminal-workspace-snapshot</text>
 
   <!-- One-liner -->
-  <text x="180" y="104" font-family="'Segoe UI', Arial, sans-serif" font-size="20" fill="#8B8BA0">Never lose your Claude Code tabs again.</text>
+  <text x="180" y="102" font-family="'Segoe UI', Arial, sans-serif" font-size="20" fill="#8B8BA0">Never lose your Claude Code or Codex tabs again.</text>
 
   <!-- Badge row -->
   <g transform="translate(180, 124)">
-    <!-- MIT badge -->
+    <!-- License / version -->
     <rect x="0" y="0" width="40" height="26" rx="4" fill="#555"/>
     <rect x="40" y="0" width="40" height="26" rx="4" fill="#4A9BD9"/>
     <rect x="40" y="0" width="1" height="26" fill="#555"/>
     <text x="20" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="14" fill="#fff" text-anchor="middle">MIT</text>
-    <text x="60" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="13" fill="#fff" text-anchor="middle">v1.1</text>
+    <text x="60" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="13" fill="#fff" text-anchor="middle">v1.3</text>
 
-    <!-- Claude Code badge -->
-    <rect x="94" y="0" width="86" height="26" rx="4" fill="#555"/>
-    <rect x="180" y="0" width="90" height="26" rx="4" fill="#8B5CF6"/>
-    <rect x="180" y="0" width="1" height="26" fill="#555"/>
-    <text x="137" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="14" fill="#fff" text-anchor="middle">Claude Code</text>
-    <text x="225" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="14" fill="#fff" text-anchor="middle">compatible</text>
+    <!-- Agents badge -->
+    <rect x="94" y="0" width="150" height="26" rx="4" fill="#555"/>
+    <rect x="244" y="0" width="90" height="26" rx="4" fill="#8B5CF6"/>
+    <rect x="244" y="0" width="1" height="26" fill="#555"/>
+    <text x="169" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="14" fill="#fff" text-anchor="middle">Claude Code + Codex</text>
+    <text x="289" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="14" fill="#fff" text-anchor="middle">compatible</text>
 
     <!-- Windows badge -->
-    <rect x="284" y="0" width="68" height="26" rx="4" fill="#555"/>
-    <rect x="352" y="0" width="70" height="26" rx="4" fill="#0078D6"/>
-    <rect x="352" y="0" width="1" height="26" fill="#555"/>
-    <text x="318" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="14" fill="#fff" text-anchor="middle">platform</text>
-    <text x="387" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="14" fill="#fff" text-anchor="middle">Windows</text>
+    <rect x="348" y="0" width="68" height="26" rx="4" fill="#555"/>
+    <rect x="416" y="0" width="70" height="26" rx="4" fill="#0078D6"/>
+    <rect x="416" y="0" width="1" height="26" fill="#555"/>
+    <text x="382" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="14" fill="#fff" text-anchor="middle">platform</text>
+    <text x="451" y="18" font-family="'Segoe UI', Arial, sans-serif" font-size="14" fill="#fff" text-anchor="middle">Windows</text>
   </g>
 
   <!-- Subtle bottom accent line -->
