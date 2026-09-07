@@ -130,7 +130,7 @@ function Get-EditDistance {
 # time -- what the event message reports -- and offset 16 is UTC.
 function ConvertFrom-SystemTimeBytes {
     param([byte[]]$Bytes, [int]$Offset = 0)
-    if (-not $Bytes -or $Bytes.Length -lt ($Offset + 16)) { return $null }
+    if (-not $Bytes -or $Offset -lt 0 -or $Bytes.Length -lt ($Offset + 16)) { return $null }
     $y  = [BitConverter]::ToUInt16($Bytes, $Offset)
     $mo = [BitConverter]::ToUInt16($Bytes, $Offset + 2)
     $d  = [BitConverter]::ToUInt16($Bytes, $Offset + 6)
@@ -146,8 +146,8 @@ function ConvertFrom-SystemTimeBytes {
 function ConvertFrom-ShutdownStrings {
     param($Event)
     if ($Event.Properties.Count -lt 2) { return $null }
-    $t = "$($Event.Properties[0].Value)" -replace '[‎‏]', ''
-    $d = "$($Event.Properties[1].Value)" -replace '[‎‏]', ''
+    $t = "$($Event.Properties[0].Value)" -replace '[\u200e\u200f]', ''
+    $d = "$($Event.Properties[1].Value)" -replace '[\u200e\u200f]', ''
     if (-not $t -or -not $d) { return $null }
     $parsed = [datetime]::MinValue
     if ([datetime]::TryParse("$d $t", [ref]$parsed)) { return $parsed }

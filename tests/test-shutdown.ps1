@@ -17,6 +17,27 @@ It 'rejects an implausible year' {
     $bad = [byte[]](0,0, 9,0, 0,0, 6,0, 9,0, 5,0, 0,0, 0,0)
     Assert-Null (ConvertFrom-SystemTimeBytes -Bytes $bad -Offset 0)
 }
+It 'rejects a negative offset' {
+    Assert-Null (ConvertFrom-SystemTimeBytes -Bytes $real6008 -Offset -1)
+}
+It 'parses shutdown strings with RTL marks' {
+    $boot = [datetime]'2026-09-06 09:50:10'
+    $lrm = [char]0x200e
+    $rlm = [char]0x200f
+    $ev = [pscustomobject]@{
+        Id = 6008
+        TimeCreated = [datetime]'2026-09-06 09:50:32'
+        Properties = @(
+            [pscustomobject]@{ Value = "${lrm}09:05:00 AM${rlm}" },
+            [pscustomobject]@{ Value = "${rlm}09/06/2026${lrm}" },
+            0, 0, 0, 0, 0,
+            [pscustomobject]@{ Value = @() }
+        )
+    }
+    $r = Resolve-LastShutdown -LastBoot $boot -Events @($ev)
+    Assert-Equal 'unexpected' $r.kind
+    Assert-Equal '2026-09-06 09:05:00' $r.time.ToString('yyyy-MM-dd HH:mm:ss')
+}
 It 'prefers the 6008 payload over its own TimeCreated' {
     $boot = [datetime]'2026-09-06 09:50:10'
     $ev = [pscustomobject]@{ Id = 6008; TimeCreated = [datetime]'2026-09-06 09:50:32'
@@ -34,12 +55,13 @@ It 'uses TimeCreated for a clean shutdown' {
 }
 It 'ignores Event 41 for timing but keeps the latest valid marker' {
     $boot = [datetime]'2026-09-06 09:50:10'
-    $id41 = [pscustomobject]@{ Id = 41; TimeCreated = [datetime]'2026-09-06 09:50:16'
-                               Properties = @(0,0,0,0,0,0,0,[pscustomobject]@{ Value = [uint32]0 }) }
-    $clean = [pscustomobject]@{ Id = 6006; TimeCreated = [datetime]'2026-09-02 10:22:55'; Properties = @() }
+    $systemTime41 = [byte[]](234,7,9,0,0,0,6,0,9,0,45,0,0,0,0,0)
+    $id41 = [pscustomobject]@{ Id = 41; TimeCreated = [datetime]'2026-09-06 09:45:00'
+                               Properties = @(0,0,0,0,0,0,0,[pscustomobject]@{ Value = $systemTime41 }) }
+    $clean = [pscustomobject]@{ Id = 6006; TimeCreated = [datetime]'2026-09-06 09:40:00'; Properties = @() }
     $r = Resolve-LastShutdown -LastBoot $boot -Events @($id41, $clean)
     Assert-Equal 'clean' $r.kind
-    Assert-Equal '2026-09-02 10:22:55' $r.time.ToString('yyyy-MM-dd HH:mm:ss')
+    Assert-Equal '2026-09-06 09:40:00' $r.time.ToString('yyyy-MM-dd HH:mm:ss')
 }
 It 'falls back to boot time when no marker is usable' {
     $boot = [datetime]'2026-09-06 09:50:10'
