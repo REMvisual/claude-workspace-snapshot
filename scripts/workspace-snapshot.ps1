@@ -483,24 +483,28 @@ function New-CodexSessionRecord {
 # it outranks file-activity guesses. Its backups are searched too.
 function Get-SnapshotHistoryIds {
     param([string]$WorkspaceFile, [datetime]$LastBoot)
-    $out = @()
     $candidates = @()
     if (Test-Path -LiteralPath $WorkspaceFile) { $candidates += Get-Item -LiteralPath $WorkspaceFile }
     $backupDir = Join-Path (Split-Path -Parent $WorkspaceFile) 'workspace-backups'
     if (Test-Path -LiteralPath $backupDir) {
         $candidates += @(Get-ChildItem -LiteralPath $backupDir -Filter 'workspace-*.json' -ErrorAction SilentlyContinue)
     }
+    $out = @()
     $seen = @{}
+    # The pre-crash workspace.json is a single point-in-time record, not a set to
+    # accumulate -- use the newest snapshot that predates the boot, and fall through
+    # to progressively older backups ONLY when a file yields zero valid sessions.
     foreach ($file in @($candidates | Where-Object { $_.LastWriteTime -lt $LastBoot } |
                         Sort-Object LastWriteTime -Descending)) {
         $ws = $null
         try { $ws = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+        $fileOut = @()
         foreach ($g in @($ws.groups)) {
             foreach ($s in @($g.sessions)) {
                 $sid = "$($s.sessionId)".Trim().ToLower()
                 if ($sid -notmatch "^$uuidRe$" -or $seen.ContainsKey($sid)) { continue }
                 $seen[$sid] = $true
-                $out += [pscustomobject]@{
+                $fileOut += [pscustomobject]@{
                     sessionId = $sid
                     agent     = if ($s.agent) { "$($s.agent)" } else { 'claude' }
                     tabName   = "$($s.tabName)"
@@ -509,6 +513,10 @@ function Get-SnapshotHistoryIds {
                     source    = 'snapshot'
                 }
             }
+        }
+        if ($fileOut.Count -gt 0) {
+            $out = $fileOut
+            break
         }
     }
     return $out
@@ -522,6 +530,9 @@ function Merge-SessionSets {
     foreach ($s in @($Live)) { $seen[$s.sessionId] = $true }
     $ranked = @(@($History) | Sort-Object `
         @{ Expression = { if ($_.source -eq 'snapshot') { 0 } else { 1 } } },
+        # A snapshot row has no messageCount and defaults to 99 here, so it is always
+        # scored "substantial" -- deliberate: it is a known-was-open tab, not an
+        # inferred one, so the trivial-session demotion below never applies to it.
         @{ Expression = { $mc = 99; if ($null -ne $_.messageCount) { $mc = [int]$_.messageCount }; if ($mc -le 2) { 1 } else { 0 } } },
         @{ Expression = { $d = [datetime]::MinValue; try { $d = [datetime]::Parse($_.modified) } catch {}; $d }; Descending = $true })
     $out = [System.Collections.ArrayList]::new()
