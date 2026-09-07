@@ -89,15 +89,16 @@ $colorPalette = @(
     '#16A085','#F39C12','#7D3C98','#2471A3','#CB4335'
 )
 
-# Case-normalised on purpose. A project's leaf name reaches us from two places with
-# two casings: Claude reports the cwd its own process recorded, Codex reports whatever
-# the user typed at the prompt ("cd c:\standalone\vtwo"). Hashing case-sensitively gave
-# "vtwo" and "VTWO" different colors, so one window group could restore with two
-# different tab colors.
+# Case-SENSITIVE on purpose. A project leaf can reach us with either casing (Claude
+# reports the cwd its own process recorded, Codex reports whatever the user typed at
+# the prompt), so "vtwo" and "VTWO" do get different colors. Normalizing the case here
+# was tried and reverted: it reshuffles the palette for every existing project whose
+# name contains an uppercase letter, and a certain visible color change for every
+# current user is a worse trade than a rare, purely cosmetic inconsistency.
 function Get-ProjectColor {
     param([string]$Name)
     [int]$hash = 5381
-    foreach ($c in "$Name".ToLower().ToCharArray()) {
+    foreach ($c in "$Name".ToCharArray()) {
         $hash = (($hash * 33) + [int]$c) -band 0x7FFFFFFF
     }
     $idx = $hash % $colorPalette.Count

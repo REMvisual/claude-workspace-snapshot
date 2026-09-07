@@ -239,10 +239,3 @@ It 'source is process for a tier a running process proves, file for a tier only 
         -FirstPrompt '' -Modified (Get-Date) -Tier 'recent'
     Assert-Equal 'file' $r.source 'tier recent is file-backed'
 }
-
-It 'colors a project the same whichever casing the agent reported its cwd in' {
-    # Codex records whatever the user typed ("cd c:\standalone\vtwo"); Claude records
-    # its own process cwd. A case-sensitive hash split one window group across two colors.
-    Assert-Equal (Get-ProjectColor 'VTWO') (Get-ProjectColor 'vtwo')
-    Assert-Equal (Get-ProjectColor 'VTWO') (Get-ProjectColor 'Vtwo')
-}
