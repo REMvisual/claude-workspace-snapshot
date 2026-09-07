@@ -203,10 +203,47 @@ function Get-LastShutdownInfo {
 # the same class of synthetic prompt the Claude path already skips.
 $script:codexSyntheticRe = '^\s*(#\s*AGENTS\.md instructions|<environment_context|<user_instructions|<INSTRUCTIONS)'
 
+# A running codex.exe holds its rollout file open for writing. [System.IO.File]::ReadLines
+# and Get-Content open with the CLR default (FileShare.Read, and codex's own handle wants
+# ReadWrite), so reading a LIVE rollout throws a sharing-violation IOException -- exactly
+# the sessions this feature exists to capture. Open explicitly with FileShare.ReadWrite so
+# our read is compatible with codex's own handle, and never throw out of this helper: a
+# locked-harder-than-that or vanished file degrades to "no lines", not an aborted caller.
+function Get-SharedFileLines {
+    param([string]$Path, [int]$MaxLines = 0)
+    # NOTE: every return below uses the unary comma (,$result) on purpose. Without it,
+    # PowerShell enumerates the returned List[string] onto the output pipeline and the
+    # caller's assignment collapses a 1-line result to a bare scalar string -- which then
+    # silently mis-indexes as a single character ($lines[0] -> "{") instead of a full line.
+    $result = New-Object System.Collections.Generic.List[string]
+    if (-not (Test-Path -LiteralPath $Path)) { return ,$result }
+    $fs = $null
+    $sr = $null
+    try {
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+        $sr = New-Object System.IO.StreamReader($fs)
+        $n = 0
+        while ($true) {
+            $line = $sr.ReadLine()
+            if ($null -eq $line) { break }
+            $n++
+            $result.Add($line)
+            if ($MaxLines -gt 0 -and $n -ge $MaxLines) { break }
+        }
+    } catch {
+        return ,$result
+    } finally {
+        if ($sr) { $sr.Dispose() }
+        if ($fs) { $fs.Dispose() }
+    }
+    return ,$result
+}
+
 function Get-CodexSessionMeta {
     param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) { return $null }
-    $line = Get-Content -LiteralPath $Path -TotalCount 1 -ErrorAction SilentlyContinue
+    $lines = Get-SharedFileLines -Path $Path -MaxLines 1
+    if ($lines.Count -lt 1) { return $null }
+    $line = $lines[0]
     if (-not $line) { return $null }
     try { $obj = $line | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
     if ($obj.type -ne 'session_meta') { return $null }
@@ -224,8 +261,7 @@ function Get-CodexSessionMeta {
 function Get-CodexTitleMap {
     param([string]$IndexPath)
     $map = @{}
-    if (-not (Test-Path -LiteralPath $IndexPath)) { return $map }
-    foreach ($line in [System.IO.File]::ReadLines($IndexPath)) {
+    foreach ($line in (Get-SharedFileLines -Path $IndexPath)) {
         if (-not $line) { continue }
         try { $o = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
         if (-not $o.id -or -not $o.thread_name) { continue }
@@ -240,11 +276,7 @@ function Get-CodexTitleMap {
 
 function Get-CodexFirstPrompt {
     param([string]$Path, [int]$MaxLines = 400)
-    if (-not (Test-Path -LiteralPath $Path)) { return $null }
-    $n = 0
-    foreach ($line in [System.IO.File]::ReadLines($Path)) {
-        $n++
-        if ($n -gt $MaxLines) { break }
+    foreach ($line in (Get-SharedFileLines -Path $Path -MaxLines $MaxLines)) {
         if ($line -notmatch '"role":"user"') { continue }
         try { $o = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
         if ($o.payload.role -ne 'user') { continue }

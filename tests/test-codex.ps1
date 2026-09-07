@@ -27,3 +27,23 @@ It 'skips synthetic AGENTS.md preamble and finds the typed prompt' {
     $p = Get-CodexFirstPrompt -Path (Join-Path $fx 'rollout-user.jsonl')
     Assert-Equal 'juar making sure that we are using our deisgn mocup for proper design.' $p
 }
+It 'reads a rollout while codex holds it open for writing (live-session lock)' {
+    # A real running codex.exe opens its rollout with FileAccess.ReadWrite and a
+    # FileShare that still permits external readers, PROVIDED the reader also
+    # requests FileShare.ReadWrite (verified against a real live rollout on this
+    # machine: [System.IO.File]::ReadLines throws a sharing-violation IOException
+    # against it, while File.Open(..., FileShare.ReadWrite|Delete) reads it fine).
+    # This reproduces that exact lock shape on a throwaway temp file.
+    $tmp = Join-Path $env:TEMP "wss-codex-lock-test-$([guid]::NewGuid()).jsonl"
+    Copy-Item -LiteralPath (Join-Path $fx 'rollout-user.jsonl') -Destination $tmp
+    $lockFs = [System.IO.File]::Open($tmp, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)
+    try {
+        $meta = Get-CodexSessionMeta -Path $tmp
+        Assert-Equal '01a0760d-add4-72d2-ad5c-05467335623e' $meta.sessionId
+        $prompt = Get-CodexFirstPrompt -Path $tmp
+        Assert-Equal 'juar making sure that we are using our deisgn mocup for proper design.' $prompt
+    } finally {
+        $lockFs.Dispose()
+        Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
+    }
+}
