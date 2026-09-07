@@ -125,6 +125,80 @@ function Get-EditDistance {
     return $prev[$lb]
 }
 
+# SYSTEMTIME: wYear, wMonth, wDayOfWeek, wDay, wHour, wMinute, wSecond, wMilliseconds
+# (16 bytes, little-endian UInt16 each). Event 6008 packs two: offset 0 is local
+# time -- what the event message reports -- and offset 16 is UTC.
+function ConvertFrom-SystemTimeBytes {
+    param([byte[]]$Bytes, [int]$Offset = 0)
+    if (-not $Bytes -or $Bytes.Length -lt ($Offset + 16)) { return $null }
+    $y  = [BitConverter]::ToUInt16($Bytes, $Offset)
+    $mo = [BitConverter]::ToUInt16($Bytes, $Offset + 2)
+    $d  = [BitConverter]::ToUInt16($Bytes, $Offset + 6)
+    $h  = [BitConverter]::ToUInt16($Bytes, $Offset + 8)
+    $mi = [BitConverter]::ToUInt16($Bytes, $Offset + 10)
+    $s  = [BitConverter]::ToUInt16($Bytes, $Offset + 12)
+    $ms = [BitConverter]::ToUInt16($Bytes, $Offset + 14)
+    if ($y -lt 1980 -or $y -gt 2200) { return $null }
+    try { return New-Object DateTime $y, $mo, $d, $h, $mi, $s, $ms } catch { return $null }
+}
+
+# Locale fallback: Properties[0]/[1] are display strings peppered with RTL marks.
+function ConvertFrom-ShutdownStrings {
+    param($Event)
+    if ($Event.Properties.Count -lt 2) { return $null }
+    $t = "$($Event.Properties[0].Value)" -replace '[‎‏]', ''
+    $d = "$($Event.Properties[1].Value)" -replace '[‎‏]', ''
+    if (-not $t -or -not $d) { return $null }
+    $parsed = [datetime]::MinValue
+    if ([datetime]::TryParse("$d $t", [ref]$parsed)) { return $parsed }
+    return $null
+}
+
+# Latest shutdown marker strictly before $LastBoot.
+#   6008      -> unexpected; time comes from the SYSTEMTIME blob, NOT TimeCreated
+#                (6008 is written after the next boot).
+#   1074/6006 -> clean; written before shutdown, so TimeCreated IS the time.
+#   41        -> corroborates "unexpected" only. Its Properties are scalar zeros
+#                on this platform, so it carries no usable timestamp.
+function Resolve-LastShutdown {
+    param([datetime]$LastBoot, $Events)
+    $best = $null
+    foreach ($e in @($Events)) {
+        $t = $null
+        $kind = $null
+        if ([int]$e.Id -eq 6008) {
+            $kind = 'unexpected'
+            $blob = $null
+            if ($e.Properties.Count -gt 7) { $blob = $e.Properties[7].Value }
+            if ($blob -is [byte[]]) { $t = ConvertFrom-SystemTimeBytes -Bytes $blob -Offset 0 }
+            if (-not $t) { $t = ConvertFrom-ShutdownStrings -Event $e }
+        } elseif ([int]$e.Id -eq 1074 -or [int]$e.Id -eq 6006) {
+            $kind = 'clean'
+            $t = $e.TimeCreated
+        }
+        if ($t -and $t -lt $LastBoot) {
+            if (-not $best -or $t -gt $best.time) {
+                $best = [pscustomobject]@{ time = $t; kind = $kind }
+            }
+        }
+    }
+    if (-not $best) { $best = [pscustomobject]@{ time = $LastBoot; kind = 'assumed' } }
+    return $best
+}
+
+# Live wrapper -- kept separate so Resolve-LastShutdown stays pure and testable.
+function Get-LastShutdownInfo {
+    param([datetime]$LastBoot)
+    $events = @()
+    try {
+        $events = @(Get-WinEvent -FilterHashtable @{
+            LogName = 'System'; Id = 6008, 6006, 1074, 41
+            StartTime = $LastBoot.AddDays(-30)
+        } -ErrorAction Stop)
+    } catch {}
+    return Resolve-LastShutdown -LastBoot $LastBoot -Events $events
+}
+
 # Test seam: dot-source with WSS_LOAD_ONLY=1 to get the functions without running the tool.
 if ($env:WSS_LOAD_ONLY -eq '1') { return }
 
