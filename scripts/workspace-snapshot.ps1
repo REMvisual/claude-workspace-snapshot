@@ -201,7 +201,15 @@ function Get-LastShutdownInfo {
 
 # Codex writes AGENTS.md and environment context as the first role:user items --
 # the same class of synthetic prompt the Claude path already skips.
-$script:codexSyntheticRe = '^\s*(#\s*AGENTS\.md instructions|<environment_context|<user_instructions|<INSTRUCTIONS)'
+# Generalised on purpose: every synthetic shape Codex emits as a first role:user
+# item is either the "# AGENTS.md instructions" heading or an XML-ish tag opening
+# at position 0 (<environment_context, <user_instructions, <INSTRUCTIONS,
+# <codex_internal_context, <recommended_plugins, <image, ...). New Codex versions
+# keep adding new tag names -- matching "<" + a tag-name character generically
+# means we don't need a code change every time one shows up. The explicit named
+# tags are kept below only as documentation of shapes seen in the wild; the
+# leading "<[A-Za-z]" branch is what actually does the work.
+$script:codexSyntheticRe = '^\s*(#\s*AGENTS\.md instructions|<[A-Za-z]|<environment_context|<user_instructions|<INSTRUCTIONS)'
 
 # A running codex.exe holds its rollout file open for writing. [System.IO.File]::ReadLines
 # and Get-Content open with the CLR default (FileShare.Read, and codex's own handle wants
