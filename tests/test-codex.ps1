@@ -55,3 +55,41 @@ It 'reads a rollout while codex holds it open for writing (live-session lock)' {
         Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
     }
 }
+
+It 'reports a held lock as held and a free one as free' {
+    $tmp = Join-Path $env:TEMP "wss-lock-$([guid]::NewGuid()).lock"
+    Set-Content -LiteralPath $tmp -Value '' -Encoding ASCII
+    try {
+        Assert-Equal $false (Test-LockHeld -Path $tmp) 'nothing holding it yet'
+        $fs = [System.IO.File]::Open($tmp, 'Open', 'ReadWrite', 'None')
+        try { Assert-Equal $true (Test-LockHeld -Path $tmp) 'exclusive handle open' }
+        finally { $fs.Close(); $fs.Dispose() }
+        Assert-Equal $false (Test-LockHeld -Path $tmp) 'handle released'
+    } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+}
+
+It 'reports a missing lock file as not held' {
+    Assert-Equal $false (Test-LockHeld -Path (Join-Path $env:TEMP 'wss-absent.lock'))
+}
+
+It 'ignores the coordination lock and non-uuid names' {
+    $dir = Join-Path $env:TEMP "wss-locks-$([guid]::NewGuid())"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    try {
+        # Hold real exclusive handles on both files to prove the zero result comes
+        # from name filtering, not from unlocked-file state
+        $coordFile = Join-Path $dir '.coordination.lock'
+        $badNameFile = Join-Path $dir 'not-a-uuid.lock'
+        Set-Content $coordFile ''
+        Set-Content $badNameFile ''
+        $fs1 = [System.IO.File]::Open($coordFile, 'Open', 'ReadWrite', 'None')
+        $fs2 = [System.IO.File]::Open($badNameFile, 'Open', 'ReadWrite', 'None')
+        try {
+            $held = @(Get-CodexHeldLockIds -LockDir $dir)
+            Assert-Equal 0 $held.Count
+        } finally {
+            $fs1.Close(); $fs1.Dispose()
+            $fs2.Close(); $fs2.Dispose()
+        }
+    } finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+}

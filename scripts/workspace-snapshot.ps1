@@ -297,6 +297,36 @@ function Get-CodexFirstPrompt {
     return $null
 }
 
+# A Codex session holds an exclusive handle on its lock file for as long as it
+# lives. FileNotFoundException derives from IOException, so a missing file would
+# otherwise read as "held" -- check existence first.
+function Test-LockHeld {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    try {
+        $fs = [System.IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
+        $fs.Close()
+        $fs.Dispose()
+        return $false
+    } catch [System.IO.IOException] {
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Get-CodexHeldLockIds {
+    param([string]$LockDir)
+    $ids = @()
+    if (-not (Test-Path -LiteralPath $LockDir)) { return $ids }
+    foreach ($f in @(Get-ChildItem -LiteralPath $LockDir -Filter '*.lock' -ErrorAction SilentlyContinue)) {
+        if ($f.Name -eq '.coordination.lock') { continue }
+        if ($f.BaseName -notmatch "^$uuidRe$") { continue }
+        if (Test-LockHeld -Path $f.FullName) { $ids += $f.BaseName }
+    }
+    return $ids
+}
+
 # Test seam: dot-source with WSS_LOAD_ONLY=1 to get the functions without running the tool.
 if ($env:WSS_LOAD_ONLY -eq '1') { return }
 
