@@ -27,7 +27,8 @@ Desktop.ini
 .beads-credential-key
 .beads/proxieddb/
 
-# OpenViking
+# OpenViking -- ov.conf and its backups carry API keys
 ov.conf
+ov.conf.bak*
 .openviking/
 data/
