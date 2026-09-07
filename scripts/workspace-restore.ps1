@@ -59,6 +59,9 @@ function Get-SafeTabName {
     return ($n -replace '\s+', ' ').Trim()
 }
 
+# Test seam: dot-source with WSS_LOAD_ONLY=1 to get the functions without running the tool.
+if ($env:WSS_LOAD_ONLY -eq '1') { return }
+
 # Check workspace exists
 if (-not (Test-Path $workspaceFile)) {
     Write-Host ""

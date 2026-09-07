@@ -64,9 +64,72 @@ function Get-SafeTabName {
     return ($n -replace '\s+', ' ').Trim()
 }
 
-# --- STEP 1: Detect live session IDs (tiered by certainty) ---
-
 $uuidRe = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+
+# Deterministic color palette -- each project gets a stable color based on its name
+function Get-ProjectColor {
+    param([string]$Name)
+    [int]$hash = 5381
+    foreach ($c in $Name.ToCharArray()) {
+        $hash = (($hash * 33) + [int]$c) -band 0x7FFFFFFF
+    }
+    $idx = $hash % $colorPalette.Count
+    return $colorPalette[$idx]
+}
+
+# Snapshot the full process table once -- initialised empty here so the function
+# below is safe to define before STEP 1 actually builds the live table.
+$allProcs = @{}
+
+# Does this process live inside a Windows Terminal tab?
+function Test-UnderWindowsTerminal {
+    param([uint32]$ProcId)
+    $cur = $ProcId
+    for ($d = 0; $d -lt 12; $d++) {
+        if (-not $allProcs.ContainsKey($cur)) { return $false }
+        $p = $allProcs[$cur]
+        if ($p.Name -eq 'WindowsTerminal.exe') { return $true }
+        $cur = [uint32]$p.ParentProcessId
+    }
+    return $false
+}
+
+# Damerau-Levenshtein (optimal string alignment) so typo'd renames still find
+# their project: "defromer" -> "deformers" is one transposition + one insert.
+# Rolling 1-D rows: Windows PowerShell 5.1 cannot parse 2-D array indexing here.
+function Get-EditDistance {
+    param([string]$A, [string]$B)
+    $la = $A.Length; $lb = $B.Length
+    if ($la -eq 0) { return $lb }
+    if ($lb -eq 0) { return $la }
+    $prev2 = New-Object 'int[]' ($lb + 1)   # row x-2 (for transpositions)
+    $prev  = New-Object 'int[]' ($lb + 1)   # row x-1
+    $curr  = New-Object 'int[]' ($lb + 1)   # row x
+    for ($y = 0; $y -le $lb; $y++) { $prev[$y] = $y }
+    for ($x = 1; $x -le $la; $x++) {
+        $curr[0] = $x
+        for ($y = 1; $y -le $lb; $y++) {
+            $cost = if ($A[$x - 1] -eq $B[$y - 1]) { 0 } else { 1 }
+            $best = $prev[$y] + 1
+            $t = $curr[$y - 1] + 1
+            if ($t -lt $best) { $best = $t }
+            $t = $prev[$y - 1] + $cost
+            if ($t -lt $best) { $best = $t }
+            if ($x -gt 1 -and $y -gt 1 -and $A[$x - 1] -eq $B[$y - 2] -and $A[$x - 2] -eq $B[$y - 1]) {
+                $t = $prev2[$y - 2] + 1
+                if ($t -lt $best) { $best = $t }
+            }
+            $curr[$y] = $best
+        }
+        $tmp = $prev2; $prev2 = $prev; $prev = $curr; $curr = $tmp
+    }
+    return $prev[$lb]
+}
+
+# Test seam: dot-source with WSS_LOAD_ONLY=1 to get the functions without running the tool.
+if ($env:WSS_LOAD_ONLY -eq '1') { return }
+
+# --- STEP 1: Detect live session IDs (tiered by certainty) ---
 
 # One recursive scan of ~/.claude/projects feeds every later step (Methods B/C,
 # history mode, and per-session metadata) instead of rescanning per session.
@@ -86,22 +149,8 @@ foreach ($f in $allJsonl) {
 }
 
 # Snapshot the full process table once
-$allProcs = @{}
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
     $allProcs[[uint32]$_.ProcessId] = $_
-}
-
-# Does this process live inside a Windows Terminal tab?
-function Test-UnderWindowsTerminal {
-    param([uint32]$ProcId)
-    $cur = $ProcId
-    for ($d = 0; $d -lt 12; $d++) {
-        if (-not $allProcs.ContainsKey($cur)) { return $false }
-        $p = $allProcs[$cur]
-        if ($p.Name -eq 'WindowsTerminal.exe') { return $true }
-        $cur = [uint32]$p.ParentProcessId
-    }
-    return $false
 }
 
 $confirmedOpen = @{}   # sessionId -> $true : uuid confirmed by a process inside a terminal tab
@@ -375,16 +424,6 @@ $colorPalette = @(
     '#16A085','#F39C12','#7D3C98','#2471A3','#CB4335'
 )
 
-function Get-ProjectColor {
-    param([string]$Name)
-    [int]$hash = 5381
-    foreach ($c in $Name.ToCharArray()) {
-        $hash = (($hash * 33) + [int]$c) -band 0x7FFFFFFF
-    }
-    $idx = $hash % $colorPalette.Count
-    return $colorPalette[$idx]
-}
-
 $sessions = [System.Collections.ArrayList]::new()
 $haystacks = @{}         # sessionId -> normalized metadata text, used for tab-title matching
 $strongHaystacks = @{}   # sessionId -> same minus firstPrompt (title/summary/project/slug only)
@@ -522,38 +561,6 @@ foreach ($t in $openTabTitles) {
 }
 
 if (-not $historyMode -and $cleanTabs.Count -gt 0) {
-    # Damerau-Levenshtein (optimal string alignment) so typo'd renames still find
-    # their project: "defromer" -> "deformers" is one transposition + one insert.
-    # Rolling 1-D rows: Windows PowerShell 5.1 cannot parse 2-D array indexing here.
-    function Get-EditDistance {
-        param([string]$A, [string]$B)
-        $la = $A.Length; $lb = $B.Length
-        if ($la -eq 0) { return $lb }
-        if ($lb -eq 0) { return $la }
-        $prev2 = New-Object 'int[]' ($lb + 1)   # row x-2 (for transpositions)
-        $prev  = New-Object 'int[]' ($lb + 1)   # row x-1
-        $curr  = New-Object 'int[]' ($lb + 1)   # row x
-        for ($y = 0; $y -le $lb; $y++) { $prev[$y] = $y }
-        for ($x = 1; $x -le $la; $x++) {
-            $curr[0] = $x
-            for ($y = 1; $y -le $lb; $y++) {
-                $cost = if ($A[$x - 1] -eq $B[$y - 1]) { 0 } else { 1 }
-                $best = $prev[$y] + 1
-                $t = $curr[$y - 1] + 1
-                if ($t -lt $best) { $best = $t }
-                $t = $prev[$y - 1] + $cost
-                if ($t -lt $best) { $best = $t }
-                if ($x -gt 1 -and $y -gt 1 -and $A[$x - 1] -eq $B[$y - 2] -and $A[$x - 2] -eq $B[$y - 1]) {
-                    $t = $prev2[$y - 2] + 1
-                    if ($t -lt $best) { $best = $t }
-                }
-                $curr[$y] = $best
-            }
-            $tmp = $prev2; $prev2 = $prev; $prev = $curr; $curr = $tmp
-        }
-        return $prev[$lb]
-    }
-
     $openSessions = @($sessions | Where-Object { $_.tier -in @('open', 'maybe') })
     $byProject = @{}
     foreach ($s in $openSessions) {
