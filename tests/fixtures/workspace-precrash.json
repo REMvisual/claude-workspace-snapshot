@@ -1,0 +1,44 @@
+{
+  "created": "2026-09-05T18:24:59.0000000-07:00",
+  "groups": [
+    {
+      "name": "skywatch",
+      "tabColor": "#4A9BD9",
+      "sessions": [
+        {
+          "sessionId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+          "projectPath": "C:\\Projects\\skywatch",
+          "project": "skywatch",
+          "summary": "Add hourly forecast caching to reduce API calls below the free tier limit",
+          "tabName": "skywatch: Add hourly forecast caching to reduc...",
+          "tabColor": "#4A9BD9",
+          "firstPrompt": "Add hourly forecast caching to reduce API calls below the free tier limit",
+          "modified": "2026-09-05T18:20:00.0000000-07:00",
+          "gitBranch": "feature/forecast-cache",
+          "slug": null,
+          "group": "skywatch",
+          "source": "process",
+          "tier": "open",
+          "tabLabel": ""
+        },
+        {
+          "sessionId": "01a0760d-add4-72d2-ad5c-05467335623e",
+          "agent": "codex",
+          "projectPath": "C:\\Standalone\\VTWO",
+          "project": "VTWO",
+          "summary": "Confirm approved mockup usage plan",
+          "tabName": "VTWO: Confirm approved mockup usage plan",
+          "tabColor": "#2980B9",
+          "firstPrompt": "juar making sure that we are using our deisgn mocup for proper design.",
+          "modified": "2026-09-05T18:15:00.0000000-07:00",
+          "gitBranch": "",
+          "slug": "",
+          "group": "VTWO",
+          "source": "file",
+          "tier": "recent",
+          "tabLabel": ""
+        }
+      ]
+    }
+  ]
+}

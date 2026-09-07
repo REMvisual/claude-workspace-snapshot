@@ -479,6 +479,65 @@ function New-CodexSessionRecord {
     }
 }
 
+# The pre-crash workspace.json is a RECORD of what was open, not an inference --
+# it outranks file-activity guesses. Its backups are searched too.
+function Get-SnapshotHistoryIds {
+    param([string]$WorkspaceFile, [datetime]$LastBoot)
+    $out = @()
+    $candidates = @()
+    if (Test-Path -LiteralPath $WorkspaceFile) { $candidates += Get-Item -LiteralPath $WorkspaceFile }
+    $backupDir = Join-Path (Split-Path -Parent $WorkspaceFile) 'workspace-backups'
+    if (Test-Path -LiteralPath $backupDir) {
+        $candidates += @(Get-ChildItem -LiteralPath $backupDir -Filter 'workspace-*.json' -ErrorAction SilentlyContinue)
+    }
+    $seen = @{}
+    foreach ($file in @($candidates | Where-Object { $_.LastWriteTime -lt $LastBoot } |
+                        Sort-Object LastWriteTime -Descending)) {
+        $ws = $null
+        try { $ws = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+        foreach ($g in @($ws.groups)) {
+            foreach ($s in @($g.sessions)) {
+                $sid = "$($s.sessionId)".Trim().ToLower()
+                if ($sid -notmatch "^$uuidRe$" -or $seen.ContainsKey($sid)) { continue }
+                $seen[$sid] = $true
+                $out += [pscustomobject]@{
+                    sessionId = $sid
+                    agent     = if ($s.agent) { "$($s.agent)" } else { 'claude' }
+                    tabName   = "$($s.tabName)"
+                    tabColor  = "$($s.tabColor)"
+                    modified  = "$($s.modified)"
+                    source    = 'snapshot'
+                }
+            }
+        }
+    }
+    return $out
+}
+
+# Live always wins. History is ranked (snapshot-backed, then substantial, then
+# newest) and capped -- reporting the remainder rather than dropping it silently.
+function Merge-SessionSets {
+    param($Live, $History, [int]$Cap = 25)
+    $seen = @{}
+    foreach ($s in @($Live)) { $seen[$s.sessionId] = $true }
+    $ranked = @(@($History) | Sort-Object `
+        @{ Expression = { if ($_.source -eq 'snapshot') { 0 } else { 1 } } },
+        @{ Expression = { $mc = 99; if ($null -ne $_.messageCount) { $mc = [int]$_.messageCount }; if ($mc -le 2) { 1 } else { 0 } } },
+        @{ Expression = { $d = [datetime]::MinValue; try { $d = [datetime]::Parse($_.modified) } catch {}; $d }; Descending = $true })
+    $out = [System.Collections.ArrayList]::new()
+    foreach ($h in $ranked) {
+        if ($seen.ContainsKey($h.sessionId)) { continue }
+        $seen[$h.sessionId] = $true
+        [void]$out.Add($h)
+    }
+    $truncated = 0
+    if ($out.Count -gt $Cap) {
+        $truncated = $out.Count - $Cap
+        $out = [System.Collections.ArrayList]@($out[0..($Cap - 1)])
+    }
+    return [pscustomobject]@{ sessions = @($out); truncated = $truncated }
+}
+
 # Test seam: dot-source with WSS_LOAD_ONLY=1 to get the functions without running the tool.
 if ($env:WSS_LOAD_ONLY -eq '1') { return }
 
