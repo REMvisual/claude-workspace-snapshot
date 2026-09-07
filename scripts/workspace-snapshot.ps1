@@ -6,6 +6,8 @@
 #           whose cwd could not be read or matched)
 #   [F]     recent file activity only -- may already be closed
 #   [BG]    running but not a terminal tab (happy remote sessions, daemon forks)
+#   [H]     open before the last shutdown, per the pre-crash snapshot / file activity
+#           around the real shutdown time -- inferred, never saved by --auto
 # Real Windows Terminal tab titles are shown as ground truth via UIAutomation.
 #
 # Usage: workspace-snapshot.bat                      (default: 30min file window, interactive)
@@ -14,6 +16,8 @@
 #        workspace-snapshot.bat --auto --open-only   (non-interactive: save only open/likely-open tabs)
 #        workspace-snapshot.bat --out <file>         (write snapshot somewhere other than workspace.json)
 #        workspace-snapshot.bat --agent codex        (claude | codex | all -- which agent's sessions to capture)
+#        workspace-snapshot.bat --history            (force the pre-shutdown history tier on)
+#        workspace-snapshot.bat --no-history         (suppress the pre-shutdown history tier)
 #
 # The previous workspace.json is backed up to workspace-backups\ (newest 5 kept)
 # before every save, and the new file is written atomically (temp + rename).
@@ -23,12 +27,14 @@ param(
     [switch]$Auto,
     [switch]$OpenOnly,
     [string]$OutFile,
-    [string]$Agent = 'all'
+    [string]$Agent = 'all',
+    [switch]$History,
+    [switch]$NoHistory
 )
 
 function Show-SnapshotUsage {
     Write-Host ""
-    Write-Host "  Usage: workspace-snapshot.bat [minutes] [--auto] [--open-only] [--out <file>] [--agent claude|codex|all]" -ForegroundColor Yellow
+    Write-Host "  Usage: workspace-snapshot.bat [minutes] [--auto] [--open-only] [--out <file>] [--agent claude|codex|all] [--history|--no-history]" -ForegroundColor Yellow
     Write-Host ""
 }
 
@@ -40,6 +46,8 @@ for ($ai = 0; $ai -lt $args.Count; $ai++) {
     if ([int]::TryParse($a, [ref]$n)) { $Minutes = $n }
     elseif ($a -match '^--?auto$') { $Auto = $true }
     elseif ($a -match '^--?open-?only$') { $OpenOnly = $true }
+    elseif ($a -match '^--?no-?history$') { $NoHistory = $true }
+    elseif ($a -match '^--?history$') { $History = $true }
     elseif ($a -match '^--?out(-?file)?$' -and $ai + 1 -lt $args.Count) { $OutFile = "$($args[$ai + 1])"; $ai++ }
     elseif ($a -match '^--?agent$' -and $ai + 1 -lt $args.Count) { $Agent = "$($args[$ai + 1])"; $ai++ }
     else { $badArgs += $a }
@@ -479,6 +487,111 @@ function New-CodexSessionRecord {
     }
 }
 
+# Reads one Claude .jsonl transcript and projects it into the shared record shape.
+# Extracted from STEP 2's live loop so the pre-shutdown history tier can hydrate its
+# rows through the SAME reader instead of a second copy of this logic -- the two lists
+# must agree on titles, projects and colors or the same session looks like two.
+# Returns $null for anything not restorable as a tab (sidechain, no prompt, no cwd,
+# missing file), which is exactly the "silently drop it" contract both callers want.
+# The two haystacks ride along because tab-title matching needs them keyed by id.
+function Get-ClaudeSessionRecord {
+    param(
+        [string]$SessionId,
+        $JsonlFile,
+        [hashtable]$SummaryLookup,
+        [string]$Tier,
+        [string]$Source
+    )
+    if (-not $JsonlFile) { return $null }
+
+    $firstPrompt = $null
+    $cwd = $null
+    $gitBranch = ''
+    $isSidechain = $false
+    $slug = $null
+
+    try {
+        $reader = [System.IO.StreamReader]::new($JsonlFile.FullName)
+        $lineCount = 0
+        while ($null -ne ($line = $reader.ReadLine()) -and $lineCount -lt 100) {
+            $lineCount++
+            try {
+                $obj = $line | ConvertFrom-Json -ErrorAction Stop
+
+                if ($obj.isSidechain -eq $true) { $isSidechain = $true; break }
+                if (-not $cwd -and $obj.cwd) { $cwd = $obj.cwd }
+                if (-not $gitBranch -and $obj.gitBranch) { $gitBranch = $obj.gitBranch }
+                if (-not $slug -and $obj.slug) { $slug = $obj.slug }
+
+                if ($obj.type -eq 'user' -and -not $firstPrompt -and $obj.message -and $obj.message.content) {
+                    $content = $obj.message.content
+                    $candidate = $null
+                    if ($content -is [string]) {
+                        $candidate = $content
+                    } elseif ($content -is [array]) {
+                        $textBlock = $content | Where-Object { $_.type -eq 'text' } | Select-Object -First 1
+                        if ($textBlock) { $candidate = $textBlock.text }
+                    }
+                    # Skip caveat headers and slash-command records -- not real prompts, keep looking
+                    if ($candidate -and $candidate -notmatch '^\s*(<local-command-caveat>|<command-name>|<command-message>|Caveat: The messages below)') {
+                        $firstPrompt = $candidate
+                        if ($obj.cwd) { $cwd = $obj.cwd }
+                        if ($obj.gitBranch) { $gitBranch = $obj.gitBranch }
+                        break
+                    }
+                }
+            } catch {}
+        }
+        $reader.Close()
+    } catch {}
+
+    if ($isSidechain -or -not $firstPrompt -or -not $cwd) { return $null }
+
+    # Claude Code persists its live tab title as ai-title records -- the LAST one is
+    # what the terminal tab actually shows. Best possible display name.
+    $aiTitle = $null
+    Select-String -Path $JsonlFile.FullName -Pattern '"type":"ai-title","aiTitle":"([^"]+)"' -ErrorAction SilentlyContinue |
+        ForEach-Object { $aiTitle = $_.Matches[0].Groups[1].Value }
+
+    # Display name precedence: live tab title > indexed summary > first prompt
+    # (indexed summaries can also be a stale resume-caveat header)
+    $summary = if ($aiTitle) {
+        $aiTitle
+    } elseif ($SummaryLookup -and $SummaryLookup.ContainsKey($SessionId) -and $SummaryLookup[$SessionId] -notmatch '^\s*(<local-command-caveat>|<command-name>|Caveat: The messages below)') {
+        $SummaryLookup[$SessionId]
+    } else {
+        $firstPrompt
+    }
+    $tabName = Get-SafeTabName ($summary -replace '<[^>]+>', '')
+    if ($tabName.Length -gt 40) { $tabName = $tabName.Substring(0, 37) + '...' }
+
+    $project = Split-Path $cwd -Leaf
+
+    $record = [PSCustomObject]@{
+        sessionId   = $SessionId
+        agent       = 'claude'
+        projectPath = $cwd
+        project     = $project
+        summary     = $summary
+        tabName     = Get-SafeTabName "$project`: $tabName"
+        tabColor    = Get-ProjectColor $project
+        firstPrompt = if ($firstPrompt.Length -gt 80) { $firstPrompt.Substring(0, 77) + '...' } else { $firstPrompt }
+        modified    = $JsonlFile.LastWriteTime.ToString('o')
+        gitBranch   = $gitBranch
+        slug        = $slug
+        group       = $project
+        source      = $Source
+        tier        = $Tier
+        tabLabel    = ''
+    }
+
+    return [pscustomobject]@{
+        record         = $record
+        haystack       = ("$aiTitle $summary $firstPrompt $project $slug").ToLower() -replace '[^a-z0-9]', ''
+        strongHaystack = ("$aiTitle $summary $project $slug").ToLower() -replace '[^a-z0-9]', ''
+    }
+}
+
 # The pre-crash workspace.json is a RECORD of what was open, not an inference --
 # it outranks file-activity guesses. Its backups are searched too.
 function Get-SnapshotHistoryIds {
@@ -709,6 +822,7 @@ $liveIds = @($processIds + $recentIds | Select-Object -Unique)
 # under a WindowsTerminal.exe.
 $codexRecords = [System.Collections.ArrayList]::new()
 $codexRolloutById = @{}    # sessionId -> rollout FileInfo (every rollout examined, kept or not)
+$codexTitleMap = @{}       # sessionId -> thread name from session_index.jsonl
 $codexDir = Join-Path $env:USERPROFILE '.codex'
 if ($Agent -in @('codex', 'all') -and (Test-Path $codexDir)) {
     $codexSessionsDir = Join-Path $codexDir 'sessions'
@@ -716,7 +830,7 @@ if ($Agent -in @('codex', 'all') -and (Test-Path $codexDir)) {
     foreach ($id in (Get-CodexHeldLockIds -LockDir (Join-Path $codexDir 'thread-writer-locks'))) {
         $heldIds[$id] = $true
     }
-    $titleMap = Get-CodexTitleMap -IndexPath (Join-Path $codexDir 'session_index.jsonl')
+    $codexTitleMap = Get-CodexTitleMap -IndexPath (Join-Path $codexDir 'session_index.jsonl')
 
     # cwd -> is that cwd backed by a codex.exe inside a Windows Terminal tab?
     # Collect the codex.exe processes FIRST: ~/.codex survives forever once Codex has
@@ -755,7 +869,7 @@ if ($Agent -in @('codex', 'all') -and (Test-Path $codexDir)) {
         $meta = Get-CodexSessionMeta -Path $f.FullName
         if (-not $meta) { continue }          # subagent thread or unparsable
         $indexTitle = $null
-        if ($titleMap.ContainsKey($sid)) { $indexTitle = $titleMap[$sid].name }
+        if ($codexTitleMap.ContainsKey($sid)) { $indexTitle = $codexTitleMap[$sid].name }
         [void]$codexRecords.Add([pscustomobject]@{
             sessionId   = $sid
             cwd         = $meta.cwd
@@ -765,127 +879,6 @@ if ($Agent -in @('codex', 'all') -and (Test-Path $codexDir)) {
             tier        = Resolve-CodexTier -SessionId $sid -Cwd $meta.cwd -HeldIds $heldIds -TabCwds $codexTabCwds
         })
     }
-}
-
-# --- STEP 1b: History recovery fallback (only when no live sessions) ---
-# Triggered after a reboot/blackout where every Claude session was closed.
-# Live sessions always win — this branch is only reachable when $liveIds is empty.
-
-$historyMode = $false
-$historySubtitle = ''
-
-# INTERIM ANTI-CLOBBER GUARD -- Task 7 supersedes this along with the whole block below.
-# The "--auto must never overwrite a good pre-reboot snapshot" invariant used to be
-# enforced inside the history branch, which fired whenever Claude found nothing. Now a
-# single live Codex session keeps us out of that branch, so a scheduled post-blackout
-# tick would replace a 9-session pre-reboot workspace.json with a one-row Codex snapshot
-# -- recoverable only from workspace-backups, which keeps just 5. Hoisted out here so it
-# is keyed on the CLAUDE side alone, for any agent selection that included Claude.
-# (--agent codex is exempt: the user asked only for Codex, so there is no Claude
-# expectation to protect and a live Codex session is exactly what should be saved.)
-if ($liveIds.Count -eq 0 -and $Agent -ne 'codex' -and $Auto) {
-    Write-Host ""
-    Write-Host "  No live Claude sessions detected." -ForegroundColor Yellow
-    Write-Host "  (checked running processes + files modified in last $Minutes min)" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "  Auto mode: nothing saved (workspace.json left untouched)." -ForegroundColor DarkGray
-    Write-Host ""
-    exit 0
-}
-
-# Nothing found for ANY selected agent -- offer history recovery (Claude-only for now).
-if ($liveIds.Count -eq 0 -and $codexRecords.Count -eq 0) {
-    $agentLabel = switch ($Agent) { 'claude' { 'Claude' } 'codex' { 'Codex' } default { 'Claude or Codex' } }
-    Write-Host ""
-    Write-Host "  No live $agentLabel sessions detected." -ForegroundColor Yellow
-    Write-Host "  (checked running processes + files modified in last $Minutes min)" -ForegroundColor DarkGray
-    Write-Host ""
-
-    # History recovery still only knows how to read ~/.claude/projects, so it has
-    # nothing to offer a Codex-only run. Bail out rather than prompt for a search
-    # that could only ever return Claude sessions. Task 7 replaces this.
-    if ($Agent -eq 'codex') { exit 0 }
-
-    # The --auto anti-clobber exit for this path is the hoisted guard above.
-
-    # Tip if a recent workspace.json from before the last boot already exists
-    try {
-        $lastBootForTip = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime
-        if (Test-Path $workspaceFile) {
-            $wsMtime = (Get-Item $workspaceFile).LastWriteTime
-            if ($wsMtime -lt $lastBootForTip) {
-                Write-Host "  Tip: workspace.json exists from $($wsMtime.ToString('MMM dd HH:mm')) -- workspace-restore.bat may already have what you need." -ForegroundColor DarkGray
-                Write-Host ""
-            }
-        }
-    } catch {}
-
-    $histResp = Read-Host "  Look at recent history? [Y/n]"
-    if ($histResp -match '^[Nn]') {
-        Write-Host ""
-        exit 0
-    }
-
-    # Determine candidate session IDs from history.
-    try {
-        $lastBoot = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime
-    } catch {
-        $lastBoot = $null
-    }
-
-    $bootStaleDays = if ($lastBoot) { ((Get-Date) - $lastBoot).TotalDays } else { 999 }
-    $historyIds = @()
-
-    if ($lastBoot -and $bootStaleDays -le 7) {
-        # Primary: files modified in the 2 hours before last boot
-        $windowStart = $lastBoot.AddHours(-2)
-        $windowEnd   = $lastBoot
-        $historyIds = @($allJsonl |
-            Where-Object {
-                $_.BaseName -match '^[0-9a-f]{8}-' -and
-                $_.LastWriteTime -ge $windowStart -and
-                $_.LastWriteTime -le $windowEnd
-            } |
-            Sort-Object LastWriteTime -Descending |
-            ForEach-Object { $_.BaseName })
-
-        if ($historyIds.Count -gt 0) {
-            $historySubtitle = "$($historyIds.Count) sessions from before last boot ($($lastBoot.ToString('MMM dd HH:mm')) -- 2h window)"
-        }
-    }
-
-    if ($historyIds.Count -eq 0) {
-        # Fallback: top 20 most recently modified within last 30 days
-        $thirtyDaysAgo = (Get-Date).AddDays(-30)
-        $historyIds = @($allJsonl |
-            Where-Object {
-                $_.BaseName -match '^[0-9a-f]{8}-' -and
-                $_.LastWriteTime -ge $thirtyDaysAgo
-            } |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 20 |
-            ForEach-Object { $_.BaseName })
-
-        if ($historyIds.Count -gt 0) {
-            if (-not $lastBoot) {
-                $historySubtitle = "$($historyIds.Count) most recently active sessions (fallback -- boot time unavailable)"
-            } elseif ($bootStaleDays -gt 7) {
-                $historySubtitle = "$($historyIds.Count) most recently active sessions (fallback -- last boot was $([int]$bootStaleDays) days ago)"
-            } else {
-                $historySubtitle = "$($historyIds.Count) most recently active sessions (fallback -- no sessions found near boot time)"
-            }
-        }
-    }
-
-    if ($historyIds.Count -eq 0) {
-        Write-Host ""
-        Write-Host "  No historical sessions found in $projectsDir." -ForegroundColor Yellow
-        Write-Host ""
-        exit 0
-    }
-
-    $liveIds = $historyIds
-    $historyMode = $true
 }
 
 # --- STEP 2: Build session metadata from .jsonl files ---
@@ -905,82 +898,14 @@ $sessions = [System.Collections.ArrayList]::new()
 $haystacks = @{}         # sessionId -> normalized metadata text, used for tab-title matching
 $strongHaystacks = @{}   # sessionId -> same minus firstPrompt (title/summary/project/slug only)
 
-# Read each live session's .jsonl file (located via the index built in STEP 1)
+# Read each live session's .jsonl file (located via the index built in STEP 1).
+# The reader itself is Get-ClaudeSessionRecord, above the test seam -- the pre-shutdown
+# history tier further down hydrates its Claude rows through that very same function,
+# so a live row and a history row for the same session can never disagree.
 foreach ($sid in $liveIds) {
     if (-not $jsonlById.ContainsKey($sid)) { continue }
-    $jsonlFile = $jsonlById[$sid]
 
-    $firstPrompt = $null
-    $cwd = $null
-    $gitBranch = ''
-    $isSidechain = $false
-    $slug = $null
-
-    try {
-        $reader = [System.IO.StreamReader]::new($jsonlFile.FullName)
-        $lineCount = 0
-        while ($null -ne ($line = $reader.ReadLine()) -and $lineCount -lt 100) {
-            $lineCount++
-            try {
-                $obj = $line | ConvertFrom-Json -ErrorAction Stop
-
-                if ($obj.isSidechain -eq $true) { $isSidechain = $true; break }
-                if (-not $cwd -and $obj.cwd) { $cwd = $obj.cwd }
-                if (-not $gitBranch -and $obj.gitBranch) { $gitBranch = $obj.gitBranch }
-                if (-not $slug -and $obj.slug) { $slug = $obj.slug }
-
-                if ($obj.type -eq 'user' -and -not $firstPrompt -and $obj.message -and $obj.message.content) {
-                    $content = $obj.message.content
-                    $candidate = $null
-                    if ($content -is [string]) {
-                        $candidate = $content
-                    } elseif ($content -is [array]) {
-                        $textBlock = $content | Where-Object { $_.type -eq 'text' } | Select-Object -First 1
-                        if ($textBlock) { $candidate = $textBlock.text }
-                    }
-                    # Skip caveat headers and slash-command records — not real prompts, keep looking
-                    if ($candidate -and $candidate -notmatch '^\s*(<local-command-caveat>|<command-name>|<command-message>|Caveat: The messages below)') {
-                        $firstPrompt = $candidate
-                        if ($obj.cwd) { $cwd = $obj.cwd }
-                        if ($obj.gitBranch) { $gitBranch = $obj.gitBranch }
-                        break
-                    }
-                }
-            } catch {}
-        }
-        $reader.Close()
-    } catch {}
-
-    if ($isSidechain -or -not $firstPrompt -or -not $cwd) { continue }
-
-    # Claude Code persists its live tab title as ai-title records — the LAST one is
-    # what the terminal tab actually shows. Best possible display name.
-    $aiTitle = $null
-    Select-String -Path $jsonlFile.FullName -Pattern '"type":"ai-title","aiTitle":"([^"]+)"' -ErrorAction SilentlyContinue |
-        ForEach-Object { $aiTitle = $_.Matches[0].Groups[1].Value }
-
-    # Display name precedence: live tab title > indexed summary > first prompt
-    # (indexed summaries can also be a stale resume-caveat header)
-    $summary = if ($aiTitle) {
-        $aiTitle
-    } elseif ($summaryLookup.ContainsKey($sid) -and $summaryLookup[$sid] -notmatch '^\s*(<local-command-caveat>|<command-name>|Caveat: The messages below)') {
-        $summaryLookup[$sid]
-    } else {
-        $firstPrompt
-    }
-    $tabName = Get-SafeTabName ($summary -replace '<[^>]+>', '')
-    if ($tabName.Length -gt 40) { $tabName = $tabName.Substring(0, 37) + '...' }
-
-    $project = Split-Path $cwd -Leaf
-
-    $tabColor = Get-ProjectColor $project
-
-    $haystacks[$sid] = ("$aiTitle $summary $firstPrompt $project $slug").ToLower() -replace '[^a-z0-9]', ''
-    $strongHaystacks[$sid] = ("$aiTitle $summary $project $slug").ToLower() -replace '[^a-z0-9]', ''
-
-    if ($historyMode) {
-        $source = 'history'; $tier = 'recent'
-    } elseif ($confirmedOpen.ContainsKey($sid)) {
+    if ($confirmedOpen.ContainsKey($sid)) {
         $source = 'process'; $tier = 'open'
     } elseif ($confirmedBg.ContainsKey($sid)) {
         $source = 'process'; $tier = 'background'
@@ -988,28 +913,24 @@ foreach ($sid in $liveIds) {
         $source = 'file'; $tier = 'recent'
     }
 
-    [void]$sessions.Add([PSCustomObject]@{
-        sessionId   = $sid
-        agent       = 'claude'
-        projectPath = $cwd
-        project     = $project
-        summary     = $summary
-        tabName     = Get-SafeTabName "$project`: $tabName"
-        tabColor    = $tabColor
-        firstPrompt = if ($firstPrompt.Length -gt 80) { $firstPrompt.Substring(0, 77) + '...' } else { $firstPrompt }
-        modified    = $jsonlFile.LastWriteTime.ToString('o')
-        gitBranch   = $gitBranch
-        slug        = $slug
-        group       = $project
-        source      = $source
-        tier        = $tier
-        tabLabel    = ''
-    })
+    $built = Get-ClaudeSessionRecord -SessionId $sid -JsonlFile $jsonlById[$sid] `
+        -SummaryLookup $summaryLookup -Tier $tier -Source $source
+    if (-not $built) { continue }
+
+    $haystacks[$sid] = $built.haystack
+    $strongHaystacks[$sid] = $built.strongHaystack
+    [void]$sessions.Add($built.record)
 }
 
 # Fold the Codex pass into the same record shape, so tab-title matching, grouping,
 # display and save all stay agent-agnostic from here down. The projection itself lives
 # in New-CodexSessionRecord above the test seam so it can be unit-tested.
+#
+# One row per SESSION, not per rollout: a resumed Codex thread keeps its session id and
+# gets a second rollout file, which would otherwise fold into two identical-id rows --
+# duplicated on screen, and two tabs for one thread on restore. Newest rollout wins.
+$codexRecords = @($codexRecords | Sort-Object modified -Descending |
+    Group-Object sessionId | ForEach-Object { $_.Group[0] })
 foreach ($c in $codexRecords) {
     $r = New-CodexSessionRecord -SessionId $c.sessionId -Cwd $c.cwd `
         -IndexTitle $c.indexTitle -FirstPrompt $c.firstPrompt `
@@ -1023,9 +944,106 @@ foreach ($c in $codexRecords) {
     [void]$sessions.Add($r)
 }
 
+# --- STEP 1b: pre-shutdown history sweep (a TIER, not a mode) ---
+# What was open before the last shutdown is evidence worth showing even when live
+# sessions exist, so it joins the list as its own tier instead of replacing it. Two
+# sources, in order of authority: the pre-crash workspace.json (a RECORD of open tabs)
+# and file activity in a window around the REAL shutdown time from the event log.
+# Every row here is inferred, so --auto never persists one (see the selection block).
+$historyTruncated = 0
+$shutdownInfo = $null
+
+$lastBoot = $null
+try { $lastBoot = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime } catch {}
+
+# Report the empty live set BEFORE the sweep runs, so the reason for a history-only
+# list is on screen. Keyed on the live $sessions set -- $liveIds is Claude-only and is
+# unconditionally empty under --agent codex, which would make this fire always.
+if ($sessions.Count -eq 0) {
+    $agentLabel = switch ($Agent) { 'claude' { 'Claude' } 'codex' { 'Codex' } default { 'Claude or Codex' } }
+    Write-Host ""
+    Write-Host "  No live $agentLabel sessions detected." -ForegroundColor Yellow
+    Write-Host "  (checked running processes + files modified in last $Minutes min)" -ForegroundColor DarkGray
+    try {
+        if ($lastBoot -and (Test-Path $workspaceFile)) {
+            $wsMtime = (Get-Item $workspaceFile).LastWriteTime
+            if ($wsMtime -lt $lastBoot) {
+                Write-Host "  Tip: workspace.json exists from $($wsMtime.ToString('MMM dd HH:mm')) -- workspace-restore.bat may already have what you need." -ForegroundColor DarkGray
+            }
+        }
+    } catch {}
+}
+
+$wantHistory = $false
+if ($NoHistory) { $wantHistory = $false }
+elseif ($History) { $wantHistory = $true }
+elseif ($lastBoot -and ((Get-Date) - $lastBoot).TotalDays -le 7) { $wantHistory = $true }
+
+if ($wantHistory) {
+    $bootRef = if ($lastBoot) { $lastBoot } else { Get-Date }
+    $shutdownInfo = Get-LastShutdownInfo -LastBoot $bootRef
+    $winStart = $shutdownInfo.time.AddHours(-4)
+    $winEnd   = $shutdownInfo.time.AddMinutes(5)
+
+    $cands = @(Get-SnapshotHistoryIds -WorkspaceFile $workspaceFile -LastBoot $bootRef)
+    $cands += @($allJsonl |
+        Where-Object { $_.BaseName -match "^$uuidRe$" -and $_.LastWriteTime -ge $winStart -and $_.LastWriteTime -le $winEnd } |
+        ForEach-Object { [pscustomobject]@{ sessionId = $_.BaseName; agent = 'claude'
+                                            modified = $_.LastWriteTime.ToString('o'); source = 'file' } })
+    if ($Agent -in @('codex', 'all')) {
+        $codexHistDir = Join-Path $env:USERPROFILE '.codex\sessions'
+        if (Test-Path $codexHistDir) {
+            foreach ($rf in @(Get-ChildItem -Path $codexHistDir -Filter 'rollout-*.jsonl' -Recurse -ErrorAction SilentlyContinue |
+                              Where-Object { $_.LastWriteTime -ge $winStart -and $_.LastWriteTime -le $winEnd -and $_.BaseName -match "($uuidRe)$" })) {
+                $rid = $rf.BaseName -replace "^.*?($uuidRe)$", '$1'
+                # Register the rollout so hydration below can read its metadata: the live
+                # Codex pass only indexes rollouts inside the RECENCY window, and a
+                # pre-shutdown rollout is by definition outside it. Newest wins, as there.
+                if (-not $codexRolloutById.ContainsKey($rid) -or $rf.LastWriteTime -gt $codexRolloutById[$rid].LastWriteTime) {
+                    $codexRolloutById[$rid] = $rf
+                }
+                $cands += [pscustomobject]@{ sessionId = $rid; agent = 'codex'
+                                             modified = $rf.LastWriteTime.ToString('o'); source = 'file' }
+            }
+        }
+    }
+    if ($Agent -ne 'all') { $cands = @($cands | Where-Object { $_.agent -eq $Agent }) }
+
+    $merged = Merge-SessionSets -Live @($sessions) -History $cands -Cap 25
+    $historyTruncated = $merged.truncated
+
+    # Hydrate per agent, through the SAME readers the live passes use. A row we cannot
+    # hydrate (transcript deleted, rollout outside every window, subagent thread) is
+    # dropped silently -- it is not restorable as a tab, so listing it would only lie.
+    foreach ($h in $merged.sessions) {
+        $rec = $null
+        if ($h.agent -eq 'codex') {
+            if (-not $codexRolloutById.ContainsKey($h.sessionId)) { continue }
+            $rf = $codexRolloutById[$h.sessionId]
+            $meta = Get-CodexSessionMeta -Path $rf.FullName
+            if (-not $meta) { continue }
+            $histTitle = $null
+            if ($codexTitleMap.ContainsKey($h.sessionId)) { $histTitle = $codexTitleMap[$h.sessionId].name }
+            $rec = New-CodexSessionRecord -SessionId $h.sessionId -Cwd $meta.cwd `
+                -IndexTitle $histTitle -FirstPrompt (Get-CodexFirstPrompt -Path $rf.FullName) `
+                -Modified $rf.LastWriteTime -Tier 'history'
+        } else {
+            if (-not $jsonlById.ContainsKey($h.sessionId)) { continue }
+            $built = Get-ClaudeSessionRecord -SessionId $h.sessionId -JsonlFile $jsonlById[$h.sessionId] `
+                -SummaryLookup $summaryLookup -Tier 'history' -Source $h.source
+            if (-not $built) { continue }
+            $rec = $built.record
+        }
+        if (-not $rec) { continue }
+        # 'snapshot' (was demonstrably an open tab) or 'file' (mtime near the shutdown).
+        $rec.source = $h.source
+        [void]$sessions.Add($rec)
+    }
+}
+
 # Promote: we counted bare interactive claude.exe tabs (no uuid in cmdline) — the
 # N most recently active unconfirmed sessions are most likely those open tabs
-if (-not $historyMode -and $bareOpenCount -gt 0) {
+if ($bareOpenCount -gt 0) {
     @($sessions | Where-Object { $_.tier -eq 'recent' -and $_.agent -eq 'claude' } |
         Sort-Object @{Expression={[DateTime]::Parse($_.modified)}; Descending=$true} |
         Select-Object -First $bareOpenCount) |
@@ -1033,7 +1051,7 @@ if (-not $historyMode -and $bareOpenCount -gt 0) {
 }
 
 # --open-only: keep just the tabs that are (probably) on screen right now
-if ($OpenOnly -and -not $historyMode) {
+if ($OpenOnly) {
     $sessions = @($sessions | Where-Object { $_.tier -in @('open', 'maybe') })
 }
 
@@ -1054,7 +1072,7 @@ foreach ($t in $openTabTitles) {
     $cleanTabs += $tt
 }
 
-if (-not $historyMode -and $cleanTabs.Count -gt 0) {
+if ($cleanTabs.Count -gt 0) {
     $openSessions = @($sessions | Where-Object { $_.tier -in @('open', 'maybe') })
     $byProject = @{}
     foreach ($s in $openSessions) {
@@ -1162,24 +1180,34 @@ $openCount   = @($sessions | Where-Object { $_.tier -eq 'open' }).Count
 $maybeCount  = @($sessions | Where-Object { $_.tier -eq 'maybe' }).Count
 $recentCount = @($sessions | Where-Object { $_.tier -eq 'recent' }).Count
 $bgCount     = @($sessions | Where-Object { $_.tier -eq 'background' }).Count
+$histCount   = @($sessions | Where-Object { $_.tier -eq 'history' }).Count
 
 Write-Host ""
-if ($historyMode) {
-    Write-Host "  WORKSPACE SNAPSHOT (history recovery)" -ForegroundColor Yellow
-    Write-Host "  $historySubtitle" -ForegroundColor DarkGray
-} else {
-    Write-Host "  WORKSPACE SNAPSHOT (live detection)" -ForegroundColor Cyan
-    if ($cleanTabs.Count -gt 0) {
-        $titleList = ($cleanTabs | ForEach-Object { if ($_.Length -gt 25) { $_.Substring(0, 22) + '...' } else { $_ } }) -join ', '
-        Write-Host "  Open terminal tabs ($($cleanTabs.Count)): " -NoNewline -ForegroundColor DarkGray
-        Write-Host $titleList -ForegroundColor Cyan
+Write-Host "  WORKSPACE SNAPSHOT (live detection)" -ForegroundColor Cyan
+if ($cleanTabs.Count -gt 0) {
+    $titleList = ($cleanTabs | ForEach-Object { if ($_.Length -gt 25) { $_.Substring(0, 22) + '...' } else { $_ } }) -join ', '
+    Write-Host "  Open terminal tabs ($($cleanTabs.Count)): " -NoNewline -ForegroundColor DarkGray
+    Write-Host $titleList -ForegroundColor Cyan
+}
+$parts = @()
+if ($openCount)   { $parts += "$openCount open for sure" }
+if ($maybeCount)  { $parts += "$maybeCount likely open" }
+if ($recentCount) { $parts += "$recentCount recent-only" }
+if ($bgCount)     { $parts += "$bgCount background" }
+if ($histCount)   { $parts += "$histCount pre-shutdown" }
+Write-Host "  $($sessions.Count) sessions: $($parts -join ', ')" -ForegroundColor DarkGray
+
+# The history banner carries WHEN, and how sure we are of it: an event-log shutdown
+# marker (clean or unexpected) is a real timestamp; 'assumed' means none was found and
+# the boot time is standing in, so the window is a guess about a guess -- say so.
+$historyBannerText = '=== BEFORE LAST SHUTDOWN (may already be gone) ==='
+if ($shutdownInfo) {
+    $histDetail = if ($shutdownInfo.kind -eq 'assumed') {
+        ' [shutdown time unknown -- using boot time]'
+    } else {
+        " [$($shutdownInfo.kind), $($shutdownInfo.time.ToString('MMM dd HH:mm'))]"
     }
-    $parts = @()
-    if ($openCount)   { $parts += "$openCount open for sure" }
-    if ($maybeCount)  { $parts += "$maybeCount likely open" }
-    if ($recentCount) { $parts += "$recentCount recent-only" }
-    if ($bgCount)     { $parts += "$bgCount background" }
-    Write-Host "  $($sessions.Count) sessions: $($parts -join ', ')" -ForegroundColor DarkGray
+    $historyBannerText = "=== BEFORE LAST SHUTDOWN (may already be gone)$histDetail ==="
 }
 
 $tierBanners = @{
@@ -1187,13 +1215,14 @@ $tierBanners = @{
     maybe      = @{ text = '=== LIKELY OPEN (open tab detected, session inferred by recency) ==='; color = 'Yellow' }
     recent     = @{ text = '=== RECENT (file activity only -- may be closed) ==='; color = 'DarkGray' }
     background = @{ text = '=== BACKGROUND / REMOTE (running, not a terminal tab) ==='; color = 'DarkCyan' }
+    history    = @{ text = $historyBannerText; color = 'DarkYellow' }
 }
 
 $currentGroup = ''
 $currentTier = ''
 for ($i = 0; $i -lt $sessions.Count; $i++) {
     $s = $sessions[$i]
-    if (-not $historyMode -and $s.tier -ne $currentTier) {
+    if ($s.tier -ne $currentTier) {
         $currentTier = $s.tier
         $currentGroup = ''
         $banner = $tierBanners[$currentTier]
@@ -1210,18 +1239,21 @@ for ($i = 0; $i -lt $sessions.Count; $i++) {
     if ($summary.Length -gt 55) { $summary = $summary.Substring(0, 52) + '...' }
     $time = [DateTime]::Parse($s.modified).ToLocalTime().ToString('MMM dd HH:mm')
     $branch = if ($s.gitBranch -and $s.gitBranch -ne '' -and $s.gitBranch -ne 'master' -and $s.gitBranch -ne 'main') { " [$($s.gitBranch)]" } else { '' }
-    if ($historyMode) {
-        $tierTag = ' [H]'; $tierColor = 'DarkGray'
-    } else {
-        switch ($s.tier) {
-            'open'       { $tierTag = ' [OPEN]';  $tierColor = 'Green' }
-            'maybe'      { $tierTag = ' [OPEN?]'; $tierColor = 'Yellow' }
-            'background' { $tierTag = ' [BG]';    $tierColor = 'DarkCyan' }
-            default      { $tierTag = ' [F]';     $tierColor = 'DarkGray' }
-        }
+    switch ($s.tier) {
+        'open'       { $tierTag = ' [OPEN]';  $tierColor = 'Green' }
+        'maybe'      { $tierTag = ' [OPEN?]'; $tierColor = 'Yellow' }
+        'background' { $tierTag = ' [BG]';    $tierColor = 'DarkCyan' }
+        'history'    { $tierTag = ' [H]';     $tierColor = 'DarkYellow' }
+        default      { $tierTag = ' [F]';     $tierColor = 'DarkGray' }
     }
+    # A history row backed by the pre-crash snapshot WAS an open tab; one backed only
+    # by file mtime is a guess. Different confidence, so say which on the row itself.
+    if ($s.tier -eq 'history' -and $s.source -eq 'snapshot') { $tierTag += ' (from snapshot)' }
+    # Mixed Claude/Codex lists need an owner per row -- cc / cx, two chars, no wrapping.
+    $agentTag = if ($s.agent -eq 'codex') { 'cx ' } else { 'cc ' }
 
     Write-Host "  $($i+1). " -NoNewline -ForegroundColor White
+    Write-Host $agentTag -NoNewline -ForegroundColor DarkGray
     if ($s.tabLabel -and $s.tabLabel -ne $summary) {
         Write-Host "[$($s.tabLabel)] " -NoNewline -ForegroundColor Cyan
     }
@@ -1231,14 +1263,29 @@ for ($i = 0; $i -lt $sessions.Count; $i++) {
     Write-Host " $time" -ForegroundColor DarkGray
 }
 
+if ($historyTruncated -gt 0) {
+    Write-Host ""
+    Write-Host "  ($historyTruncated more pre-shutdown session(s) not shown -- use --history with a larger window)" -ForegroundColor DarkGray
+}
+
 Write-Host ""
 
 # Ask user which sessions to save (default: all; 'o' = open + likely-open tabs only).
-# In --auto mode, save everything shown without prompting (scheduled-task friendly).
+# In --auto mode, save everything OBSERVED without prompting (scheduled-task friendly).
 $selected = @()
 if ($Auto) {
-    Write-Host "  Auto mode: saving all $($sessions.Count) session(s)." -ForegroundColor DarkGray
-    $selected = 0..($sessions.Count - 1)
+    # HARD INVARIANT: --auto never persists an inferred row. A scheduled post-blackout
+    # tick that saved the history tier would replace a good pre-reboot workspace.json
+    # with a list of guesses -- recoverable only from workspace-backups, which keeps 5.
+    # Live Codex counts as observed, so the filter is on TIER, never on agent: a
+    # Codex-only live set must still save.
+    $selected = @(0..($sessions.Count - 1) | Where-Object { $sessions[$_].tier -ne 'history' })
+    if ($selected.Count -eq 0) {
+        Write-Host "  Auto mode: only pre-shutdown history found -- nothing saved." -ForegroundColor DarkGray
+        Write-Host ""
+        exit 0
+    }
+    Write-Host "  Auto mode: saving $($selected.Count) session(s)." -ForegroundColor DarkGray
 } else {
     $response = Read-Host "  Save all? [Y/n/o=open only] or enter numbers (e.g. 1,3,5)"
 

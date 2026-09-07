@@ -97,3 +97,53 @@ It 'stops at the newest snapshot that yields sessions and never surfaces older-o
         Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+
+It 'auto mode leaves workspace.json untouched when only history is found' {
+    # Self-contained "history-only" world: a fake USERPROFILE whose ~/.claude holds one
+    # pre-boot workspace.json naming one transcript that is too old to count as recent.
+    # Real claude.exe processes on the box still get detected, but their session ids do
+    # not exist under this projects dir, so the LIVE set is genuinely empty and the only
+    # row the run can produce is a hydrated history row. Asserting on the file hash (not
+    # on tiers) is what actually proves the invariant, and this fixture makes that
+    # assertion deterministic -- no dependency on whether a Codex tab happens to be open.
+    $boot = $null
+    try { $boot = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime } catch {}
+    if (-not $boot) { $boot = (Get-Date).AddHours(-3) }
+
+    $fake = Join-Path $env:TEMP ("wss-auto-" + [guid]::NewGuid().ToString('N'))
+    $proj = Join-Path $fake '.claude\projects\C--Fake-HistOnly'
+    New-Item -ItemType Directory -Path $proj -Force | Out-Null
+    $savedProfile = $env:USERPROFILE
+    try {
+        $uuid  = '77777777-1111-2222-3333-444444444444'
+        $jsonl = Join-Path $proj "$uuid.jsonl"
+        [System.IO.File]::WriteAllLines($jsonl, @(
+            '{"type":"user","cwd":"C:\\Fake\\HistOnly","gitBranch":"master","message":{"role":"user","content":"please rebuild the widget cache"}}',
+            '{"type":"ai-title","aiTitle":"Widget cache rebuild"}'
+        ), (New-Object System.Text.UTF8Encoding($false)))
+        (Get-Item -LiteralPath $jsonl).LastWriteTime = $boot.AddHours(-2)
+
+        $ws = Join-Path $fake '.claude\workspace.json'
+        [System.IO.File]::WriteAllText($ws,
+            ('{ "created": "2026-01-01T00:00:00", "groups": [ { "name": "HistOnly", "tabColor": "#111111", "sessions": [ { "sessionId": "' +
+             $uuid + '", "agent": "claude", "tabName": "HistOnly: Widget cache rebuild", "tabColor": "#111111", "modified": "2026-01-01T00:00:00" } ] } ] }'),
+            [System.Text.Encoding]::ASCII)
+        (Get-Item -LiteralPath $ws).LastWriteTime = $boot.AddMinutes(-30)
+
+        $before = (Get-FileHash -LiteralPath $ws -Algorithm SHA256).Hash
+
+        $env:USERPROFILE = $fake
+        $out = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $script:repoRoot 'scripts\workspace-snapshot.ps1') `
+            --auto --history --agent claude 2>&1
+        $env:USERPROFILE = $savedProfile
+
+        $text = ($out | Out-String)
+        Assert-True ($text -match '\[H\]') 'the fixture must actually produce a history row, or this test proves nothing'
+        Assert-True ($text -match 'only pre-shutdown history found') 'auto must report that it saved nothing'
+        $after = (Get-FileHash -LiteralPath $ws -Algorithm SHA256).Hash
+        Assert-Equal $before $after 'auto must not persist inferred rows'
+    } finally {
+        $env:USERPROFILE = $savedProfile
+        Remove-Item -LiteralPath $fake -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
