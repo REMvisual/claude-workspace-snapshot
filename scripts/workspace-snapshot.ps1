@@ -298,8 +298,11 @@ function Get-CodexFirstPrompt {
 }
 
 # A Codex session holds an exclusive handle on its lock file for as long as it
-# lives. FileNotFoundException derives from IOException, so a missing file would
-# otherwise read as "held" -- check existence first.
+# lives. Two races require handling: (1) a missing file between Test-Path and
+# Open is checked upfront; (2) a file deleted between Test-Path and File.Open
+# throws FileNotFoundException (IS-A IOException) -- catch it before IOException
+# to return $false rather than incorrectly reporting a just-exited session as live.
+# DirectoryNotFoundException is similarly preempted.
 function Test-LockHeld {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { return $false }
@@ -307,6 +310,10 @@ function Test-LockHeld {
         $fs = [System.IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
         $fs.Close()
         $fs.Dispose()
+        return $false
+    } catch [System.IO.FileNotFoundException] {
+        return $false
+    } catch [System.IO.DirectoryNotFoundException] {
         return $false
     } catch [System.IO.IOException] {
         return $true
@@ -317,14 +324,15 @@ function Test-LockHeld {
 
 function Get-CodexHeldLockIds {
     param([string]$LockDir)
-    $ids = @()
-    if (-not (Test-Path -LiteralPath $LockDir)) { return $ids }
+    # Use List[string] to preserve array-ness on all return paths, including zero-length
+    $ids = New-Object System.Collections.Generic.List[string]
+    if (-not (Test-Path -LiteralPath $LockDir)) { return ,$ids }
     foreach ($f in @(Get-ChildItem -LiteralPath $LockDir -Filter '*.lock' -ErrorAction SilentlyContinue)) {
         if ($f.Name -eq '.coordination.lock') { continue }
         if ($f.BaseName -notmatch "^$uuidRe$") { continue }
-        if (Test-LockHeld -Path $f.FullName) { $ids += $f.BaseName }
+        if (Test-LockHeld -Path $f.FullName) { $ids.Add($f.BaseName) }
     }
-    return $ids
+    return ,$ids
 }
 
 # Test seam: dot-source with WSS_LOAD_ONLY=1 to get the functions without running the tool.

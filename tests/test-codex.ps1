@@ -80,13 +80,74 @@ It 'ignores the coordination lock and non-uuid names' {
         # from name filtering, not from unlocked-file state
         $coordFile = Join-Path $dir '.coordination.lock'
         $badNameFile = Join-Path $dir 'not-a-uuid.lock'
-        Set-Content $coordFile ''
-        Set-Content $badNameFile ''
+        Set-Content -LiteralPath $coordFile -Value '' -Encoding ASCII
+        Set-Content -LiteralPath $badNameFile -Value '' -Encoding ASCII
         $fs1 = [System.IO.File]::Open($coordFile, 'Open', 'ReadWrite', 'None')
         $fs2 = [System.IO.File]::Open($badNameFile, 'Open', 'ReadWrite', 'None')
         try {
-            $held = @(Get-CodexHeldLockIds -LockDir $dir)
+            if ($env:CODEX_DEBUG) { Write-Host "TEST: Calling Get-CodexHeldLockIds for dir: $dir" }
+            $held = Get-CodexHeldLockIds -LockDir $dir
+            if ($env:CODEX_DEBUG) { Write-Host "TEST: Got result count: $($held.Count), Type: $($held.GetType().Name)" }
             Assert-Equal 0 $held.Count
+        } finally {
+            $fs1.Close(); $fs1.Dispose()
+            $fs2.Close(); $fs2.Dispose()
+        }
+    } finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+It 'returns an array of zero for a lock directory with no held locks' {
+    $dir = Join-Path $env:TEMP "wss-locks-$([guid]::NewGuid())"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    try {
+        # Test raw return value without pre-wrapping in @()
+        $result = Get-CodexHeldLockIds -LockDir $dir
+        # Must be an array type, Count property must exist and equal 0
+        Assert-Equal 0 $result.Count 'should return array with Count 0, not $null'
+    } finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+It 'returns an array with exactly one held lock containing the full uuid' {
+    $dir = Join-Path $env:TEMP "wss-locks-$([guid]::NewGuid())"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    try {
+        $lockId = '01a0760d-add4-72d2-ad5c-05467335623e'
+        $lockFile = Join-Path $dir "$lockId.lock"
+        Set-Content -LiteralPath $lockFile -Value '' -Encoding ASCII
+        $fs = [System.IO.File]::Open($lockFile, 'Open', 'ReadWrite', 'None')
+        try {
+            # Test raw return value without pre-wrapping in @()
+            $result = Get-CodexHeldLockIds -LockDir $dir
+            Assert-Equal 1 $result.Count 'should return array with Count 1'
+            # Discriminating assertion: under the bug, result[0] would be single char '0'
+            Assert-Equal 36 $result[0].Length 'element [0] must be full 36-char uuid, not single char'
+            Assert-Equal $lockId $result[0] 'element [0] must be the exact uuid'
+        } finally {
+            $fs.Close(); $fs.Dispose()
+        }
+    } finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+It 'returns an array with exactly two held locks' {
+    $dir = Join-Path $env:TEMP "wss-locks-$([guid]::NewGuid())"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    try {
+        $id1 = '01a0760d-add4-72d2-ad5c-05467335623e'
+        $id2 = '01a077a2-ff9c-70b3-b3af-9d5303a501df'
+        $file1 = Join-Path $dir "$id1.lock"
+        $file2 = Join-Path $dir "$id2.lock"
+        Set-Content -LiteralPath $file1 -Value '' -Encoding ASCII
+        Set-Content -LiteralPath $file2 -Value '' -Encoding ASCII
+        $fs1 = [System.IO.File]::Open($file1, 'Open', 'ReadWrite', 'None')
+        $fs2 = [System.IO.File]::Open($file2, 'Open', 'ReadWrite', 'None')
+        try {
+            # Test raw return value without pre-wrapping in @()
+            $result = Get-CodexHeldLockIds -LockDir $dir
+            Assert-Equal 2 $result.Count 'should return array with Count 2'
+            # Verify both ids are present
+            $ids = @($result)
+            Assert-Equal $true ($ids -contains $id1) 'should contain first uuid'
+            Assert-Equal $true ($ids -contains $id2) 'should contain second uuid'
         } finally {
             $fs1.Close(); $fs1.Dispose()
             $fs2.Close(); $fs2.Dispose()
