@@ -66,7 +66,6 @@ function Get-SafeTabName {
 
 $uuidRe = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 
-# Deterministic color palette -- each project gets a stable color based on its name
 function Get-ProjectColor {
     param([string]$Name)
     [int]$hash = 5381
