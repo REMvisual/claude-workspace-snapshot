@@ -49,7 +49,20 @@ function Invoke-Snapshot {
     $saved = $env:USERPROFILE
     try {
         $env:USERPROFILE = $FakeHome
-        $out = & powershell -NoProfile -ExecutionPolicy Bypass `
+        # Feed the child a decline on stdin, on EVERY launch and not just the calls that
+        # currently reach a prompt. `2>&1` redirects the child's STDOUT only, so without
+        # this its stdin is inherited from whatever the harness happened to have: at EOF
+        # under CI (Read-Host returns instantly, which is why this looked fine) but a live
+        # console for a developer running run-tests.ps1 by hand, where an interactive run
+        # would block on a keypress whose prompt is swallowed by the output capture -- and
+        # run-tests.ps1 has no timeout, so the suite would simply appear to hang.
+        #
+        # `n` and NOT -NonInteractive: measured, -NonInteractive does not stop Read-Host,
+        # it makes it emit a non-terminating error and return empty -- and an empty
+        # response means "save all" to this script. It would turn a declined run into a
+        # saving one and spray an error block through the captured output, weakening the
+        # very assertions these tests make. Piping a decline is the safe form.
+        $out = 'n' | & powershell -NoProfile -ExecutionPolicy Bypass `
             -File (Join-Path $script:repoRoot 'scripts\workspace-snapshot.ps1') @SnapArgs 2>&1
         return ($out | Out-String)
     } finally { $env:USERPROFILE = $saved }
